@@ -1,0 +1,359 @@
+{
+  "workspaces": [
+    "/tmp/devin-web-test",
+    "/mnt/data3/xingshuai/code/devin_web",
+    "/mnt/data1/xingshuai/code/InAIGC",
+    "/tmp/dw-rn-test",
+    "/mnt/data1/xingshuai/code/InAIGC/training/Flux2",
+    "/tmp"
+  ],
+  "sessions": {
+    "ringed-pillow": {
+      "cwd": "/tmp",
+      "title": "将 Devin CLI 扩展为支持工作区选择和会话创建的 Web 版",
+      "updatedAt": "2026-11-03T12:05:07+00:00"
+    },
+    "goofy-humidity": {
+      "cwd": "/tmp",
+      "createdAt": "2026-11-03T02:07:09.442Z",
+      "title": "问候",
+      "updatedAt": "2026-11-03T11:36:37+00:00"
+    },
+    "empty-income": {
+      "cwd": "/mnt/data1/xingshuai/code/InAIGC/training/Flux2",
+      "title": "查看 edit_strength 下的项目",
+      "updatedAt": "2026-11-03T12:02:10+00:00"
+    },
+    "holy-subject": {
+      "cwd": "/mnt/data1/xingshuai/code/InAIGC",
+      "title": "Add 3-Step LoRA Support and UI Switching for Krea2 Comparison",
+      "updatedAt": "2026-11-03T08:56:36+00:00"
+    },
+    "pi-scail2-sr": {
+      "cwd": "/mnt/data1/xingshuai/code/InAIGC",
+      "title": "scail2_sr (imported from pi)",
+      "updatedAt": "2026-11-02T08:01:54+00:00"
+    },
+    "rough-marimba": {
+      "cwd": "/mnt/data2/xingshuai/claude/template_layer",
+      "title": "查询当前项目的启动环境",
+      "updatedAt": "2026-11-03T06:12:50+00:00"
+    },
+    "speckled-teacher": {
+      "cwd": "/mnt/data1/xingshuai/code/InAIGC/training/Flux2",
+      "title": "查看本机 Pi Agent 已安装的插件",
+      "updatedAt": "2026-11-02T03:25:28+00:00"
+    },
+    "lively-sandwich": {
+      "cwd": "/mnt/data1/xingshuai/code/InAIGC",
+      "title": "将 pi 的 scail2_sr session 迁移到 Devin",
+      "updatedAt": "2026-11-02T03:09:16+00:00"
+    },
+    "hickory-radio": {
+      "cwd": "/mnt/data1/xingshuai/code/InAIGC/training/Flux2",
+      "createdAt": "2026-11-03T04:49:48.695Z",
+      "updatedAt": "2026-11-03T06:10:26.395948571+00:00"
+    },
+    "spotless-clove": {
+      "cwd": "/tmp",
+      "title": "Run exactly this bash command and nothing else: for i in 1 2 3 4 5; do echo l...",
+      "updatedAt": "2026-11-03T09:17:08+00:00"
+    },
+    "adaptive-parka": {
+      "cwd": "/tmp",
+      "title": "Reply with just the word ok.",
+      "updatedAt": "2026-11-03T09:19:58+00:00"
+    }
+  },
+  "commandsByCwd": {
+    "/mnt/data3/xingshuai/code/devin_web": [
+      {
+        "name": "login",
+        "description": "Authenticate with an API key",
+        "input": {
+          "hint": "[api-key]"
+        },
+        "_meta": {
+          "cognition.ai/icon": "log-in",
+          "cognition.ai/category": "Account"
+        }
+      },
+      {
+        "name": "logout",
+        "description": "Clear authentication",
+        "_meta": {
+          "cognition.ai/icon": "log-out",
+          "cognition.ai/category": "Account"
+        }
+      },
+      {
+        "name": "status",
+        "description": "Check authentication status",
+        "_meta": {
+          "cognition.ai/icon": "user-check",
+          "cognition.ai/category": "Account"
+        }
+      },
+      {
+        "name": "billing",
+        "description": "Choose whether a provider plan (e.g. ChatGPT) pays for its models",
+        "input": {
+          "hint": "[on|off]"
+        },
+        "_meta": {
+          "cognition.ai/icon": "credit-card",
+          "cognition.ai/category": "Account"
+        }
+      },
+      {
+        "name": "workspace",
+        "description": "List workspace directories",
+        "_meta": {
+          "cognition.ai/icon": "folder-open",
+          "cognition.ai/category": "System"
+        }
+      },
+      {
+        "name": "add-dir",
+        "description": "Add additional workspace directory",
+        "input": {
+          "hint": "<path>"
+        },
+        "_meta": {
+          "cognition.ai/icon": "folder-plus",
+          "cognition.ai/category": "System"
+        }
+      },
+      {
+        "name": "undo-add-dir",
+        "description": "Remove a workspace directory",
+        "input": {
+          "hint": "<path>"
+        },
+        "_meta": {
+          "cognition.ai/icon": "folder-minus",
+          "cognition.ai/category": "System"
+        }
+      },
+      {
+        "name": "remove-dir",
+        "description": "Remove a workspace directory",
+        "input": {
+          "hint": "<path>"
+        },
+        "_meta": {
+          "cognition.ai/icon": "folder-minus",
+          "cognition.ai/category": "System"
+        }
+      },
+      {
+        "name": "ask",
+        "description": "Switch to Ask mode (read-only)",
+        "input": {
+          "hint": "[question]"
+        },
+        "_meta": {
+          "cognition.ai/icon": "message-circle",
+          "cognition.ai/category": "Session"
+        }
+      },
+      {
+        "name": "plan",
+        "description": "Switch to Plan mode, or plan with a prompt",
+        "input": {
+          "hint": "[prompt]"
+        },
+        "_meta": {
+          "cognition.ai/icon": "file-text",
+          "cognition.ai/category": "Session"
+        }
+      },
+      {
+        "name": "code",
+        "description": "Switch to Code mode, or run a prompt in it",
+        "input": {
+          "hint": "[prompt]"
+        },
+        "_meta": {
+          "cognition.ai/icon": "code",
+          "cognition.ai/category": "Session"
+        }
+      },
+      {
+        "name": "smart",
+        "description": "Switch to Smart mode, or run a prompt under it",
+        "input": {
+          "hint": "[prompt]"
+        },
+        "_meta": {
+          "cognition.ai/icon": "sparkles",
+          "cognition.ai/category": "Session"
+        }
+      },
+      {
+        "name": "bypass",
+        "description": "Switch to Bypass Permissions mode, or run a prompt under it",
+        "input": {
+          "hint": "[prompt]"
+        },
+        "_meta": {
+          "cognition.ai/icon": "shield-off",
+          "cognition.ai/category": "Session"
+        }
+      },
+      {
+        "name": "compact",
+        "description": "Force conversation compaction",
+        "_meta": {
+          "cognition.ai/icon": "archive",
+          "cognition.ai/category": "Session"
+        }
+      },
+      {
+        "name": "context",
+        "description": "Show context window usage",
+        "_meta": {
+          "cognition.ai/icon": "pie-chart",
+          "cognition.ai/category": "Session"
+        }
+      },
+      {
+        "name": "fast",
+        "description": "Switch to the fastest model available to you, or run a prompt with it",
+        "input": {
+          "hint": "[prompt]"
+        },
+        "_meta": {
+          "cognition.ai/icon": "zap",
+          "cognition.ai/category": "Session"
+        }
+      },
+      {
+        "name": "goal",
+        "description": "Set a goal the agent keeps working on until it is done",
+        "input": {
+          "hint": "[<objective>|resume|clear]"
+        },
+        "_meta": {
+          "cognition.ai/icon": "target",
+          "cognition.ai/category": "Session"
+        }
+      },
+      {
+        "name": "btw",
+        "description": "Ask a quick side question without disrupting the main conversation",
+        "input": {
+          "hint": "<prompt>"
+        },
+        "_meta": {
+          "cognition.ai/icon": "message-circle-question",
+          "cognition.ai/category": "Session"
+        }
+      },
+      {
+        "name": "recap",
+        "description": "Recap the session so far with a short summary",
+        "_meta": {
+          "cognition.ai/icon": "history",
+          "cognition.ai/category": "Session"
+        }
+      },
+      {
+        "name": "session-stats",
+        "description": "Show session statistics",
+        "_meta": {
+          "cognition.ai/icon": "bar-chart-2",
+          "cognition.ai/category": "Session"
+        }
+      },
+      {
+        "name": "rename",
+        "description": "Rename this session",
+        "input": {
+          "hint": "[new title]"
+        },
+        "_meta": {
+          "cognition.ai/icon": "pencil",
+          "cognition.ai/category": "Session"
+        }
+      },
+      {
+        "name": "share",
+        "description": "Share this conversation with your team on Devin",
+        "_meta": {
+          "cognition.ai/icon": "share-2",
+          "cognition.ai/category": "Session"
+        }
+      },
+      {
+        "name": "mcp",
+        "description": "List configured MCP servers and their status",
+        "_meta": {
+          "cognition.ai/icon": "plug",
+          "cognition.ai/category": "System"
+        }
+      },
+      {
+        "name": "bug",
+        "description": "Report a bug to the Devin CLI developers",
+        "input": {
+          "hint": "<description>"
+        },
+        "_meta": {
+          "cognition.ai/icon": "bug",
+          "cognition.ai/category": "System"
+        }
+      },
+      {
+        "name": "help",
+        "description": "Show available commands",
+        "_meta": {
+          "cognition.ai/icon": "help-circle",
+          "cognition.ai/category": "Session"
+        }
+      },
+      {
+        "name": "declarative-repo-setup",
+        "description": "Generate and verify a working environment.yaml (Devin snapshot-setup blueprint) for a repo",
+        "input": {
+          "hint": "<owner/repo>"
+        },
+        "_meta": {
+          "cognition.ai/icon": "zap",
+          "cognition.ai/category": "Skills"
+        }
+      },
+      {
+        "name": "upload-secrets",
+        "description": "Securely upload local secrets (dotenv files, env vars, API keys) to the Devin Cloud secrets manager — values never enter the conversation",
+        "_meta": {
+          "cognition.ai/icon": "zap",
+          "cognition.ai/category": "Skills"
+        }
+      },
+      {
+        "name": "devin-playbooks:hi-i-m-devin",
+        "description": "Hi, I'm Devin. Overview.",
+        "_meta": {
+          "cognition.ai/icon": "zap",
+          "cognition.ai/category": "Skills"
+        }
+      }
+    ]
+  },
+  "usageById": {
+    "goofy-humidity": {
+      "sessionUpdate": "usage_update",
+      "used": 113138,
+      "size": 262000,
+      "_meta": {
+        "cognition.ai/inputTokens": 113034,
+        "cognition.ai/outputTokens": 104,
+        "cognition.ai/cachedReadTokens": 112704,
+        "cognition.ai/subagent_context": {
+          "parentAgentId": "root"
+        }
+      }
+    }
+  }
+}

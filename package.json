@@ -1,0 +1,16 @@
+{
+  "name": "devin-web",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Web UI for Devin CLI (ACP bridge)",
+  "scripts": {
+    "dev": "npm run dev -w server & npm run dev -w web",
+    "server": "npm run start -w server",
+    "build": "npm run build -w web",
+    "start": "npm run start -w server"
+  },
+  "workspaces": [
+    "server",
+    "web"
+  ]
+}
