@@ -831,14 +831,21 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
 }
 .msg-bubble {
   max-width: 80%; background: var(--bubble);
+  border: 1px solid var(--border);
   border-radius: 18px; border-bottom-right-radius: 6px;
   padding: 10px 16px; font-size: calc(14px * var(--tfs,1)); line-height: 1.6;
   white-space: pre-wrap; word-break: break-word;
-  transition: transform .15s ease, box-shadow .15s ease;
+  transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease;
 }
-/* Codex-style: the sent card lifts slightly on hover while its action pill
-   floats in over the top-right corner. */
-.msg.user:hover .msg-bubble { transform: translateY(-1px); box-shadow: var(--shadow-md); }
+/* Codex-style: the sent card lifts on hover while its action pill floats in
+   over the top-right corner; :active covers touch (sticky hover). */
+.msg.user:hover .msg-bubble,
+.msg.user:active .msg-bubble {
+  transform: translateY(-2px);
+  border-color: var(--accent-strong);
+  box-shadow: var(--shadow-md);
+}
+.msg.user:active .msg-actions { opacity: 1; transform: translateY(0); }
 .msg.agent { color: var(--text); }
 .agent-body { font-size: calc(14px * var(--tfs,1)); line-height: 1.7; min-width: 0; }
 .agent-body > :first-child { margin-top: 0; }
