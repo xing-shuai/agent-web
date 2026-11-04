@@ -306,6 +306,9 @@ export default function App() {
           patchSession(sid, { running: false, lastTurn: m.params?.stats || null });
         } else if (m.method?.endsWith("turn_stats")) {
           patchSession(sid, { running: false });
+        } else if (m.method?.endsWith("turn_stalled")) {
+          patchSession(sid, { running: false });
+          setBanner("该会话长时间无响应——上一轮可能已中断，可直接重新发送");
         }
       }),
       wsClient.on("session_deleted", (m) => {

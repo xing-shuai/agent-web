@@ -28,6 +28,11 @@ const ATTACH_TIMEOUT_MS = 20_000;
 // Sessions we hold but nobody interacts with get released after this idle
 // window — a held session only costs acp memory; the transcript is in sqlite.
 const IDLE_DETACH_MS = Number(process.env.IDLE_DETACH_MS || 30 * 60 * 1000);
+// pi-acp's session/load KILLS the session's live process and spawns a fresh
+// one — it is a restart, not an attach. A turn producing zero events for
+// this long is presumed orphaned (proc replaced externally or died), so we
+// stop treating it as in-flight and allow reattach again.
+const TURN_STALL_MS = Number(process.env.TURN_STALL_MS || 10 * 60 * 1000);
 // Memory/state hygiene: cold session entries (unsubscribed, unattached) are
 // swept after this idle window — all their fields rebuild from sqlite/state.
 const ENTRY_EVICT_MS = 30 * 60 * 1000;
@@ -303,6 +308,22 @@ export class SessionHub extends EventEmitter {
         console.log(`[devin-web] auto-detaching idle session ${s.id}`);
         this.closeSession(s.id).catch(() => {});
       }
+      // Dead-proc watchdog: a prompt that produced no events for
+      // TURN_STALL_MS is orphaned — the agent process was replaced or
+      // killed externally (pi-acp restarts a session on every session/load,
+      // and closeAllExcept kills siblings on any other session's load/new).
+      // Free the flag so the UI stops spinning and reattach is allowed.
+      if (
+        s.prompting > 0 &&
+        s.pendingPermissions.size === 0 &&
+        now - (s.lastActiveAt || 0) > TURN_STALL_MS
+      ) {
+        console.log(`[devin-web] turn stalled ${Math.round(TURN_STALL_MS / 60000)}min with no events — clearing running flag for ${s.id}`);
+        s.prompting = 0;
+        this.#broadcast(s.id, { type: "session_state", sessionId: s.id, state: "held" }, { global: true });
+        this.#broadcast(s.id, { type: "agent_notification", sessionId: s.id, method: "devin-web/turn_stalled", params: { idleMs: TURN_STALL_MS } }, { global: true });
+        if (s.attached && s.queue.length) this.#drainQueue(s);
+      }
       // Cold-entry sweep: unattached, unsubscribed, idle entries hold their
       // whole transcript buffer + image index for no benefit — drop them;
       // everything rebuilds from sqlite/state on the next subscribe.
@@ -338,6 +359,7 @@ export class SessionHub extends EventEmitter {
         s?.attachWanted &&
         !s.attached &&
         !s.attaching &&
+        s.prompting === 0 &&
         s.subscribers.size > 0
       ) {
         console.log(`[devin-web] lock freed — taking over ${it.sessionId}`);
@@ -493,28 +515,49 @@ export class SessionHub extends EventEmitter {
     const s = this.#entry(sessionId, cwd);
     if (s.attached) return s;
     if (s.attaching) return s.attaching;
+    // pi-acp's session/load closes the session's live process before
+    // spawning a fresh one — a restart, not an attach. Refuse it while a
+    // prompt of ours may still be running on that proc (silent longer than
+    // TURN_STALL_MS means the turn is already dead).
+    if (
+      !this.devinExt &&
+      s.prompting > 0 &&
+      Date.now() - (s.lastActiveAt || 0) < TURN_STALL_MS
+    ) {
+      s.attachWanted = true;
+      throw new Error("session busy — a prompt is still in flight");
+    }
     // Replay lands in a side buffer (see the sessionUpdate handler) — the
     // mirrored events stay intact until the load actually succeeds, so a
     // failed attempt changes nothing for subscribers.
     s.replayEvents = [];
     const loadReq = this.acp.request("session/load", { sessionId, cwd: s.cwd, mcpServers: [] });
-    s.attaching = Promise.race([
-      loadReq,
-      // A hung session/load (busy/wedged agent) must not hold s.attaching
-      // forever — it starves the sqlite mirror via the attaching guard.
-      new Promise((_, rej) =>
-        setTimeout(() => rej(new Error("session/load timed out")), ATTACH_TIMEOUT_MS)
-      ),
-    ])
-      .then((res) => {
+    const onLoaded = (res) => {
         s.attached = true;
+        // A fresh proc cannot carry our previous in-flight prompt — clear
+        // any ghost so the queue can drain and the UI stops spinning.
+        s.prompting = 0;
         s.attachWanted = false;
         s.lastActiveAt = Date.now();
         s.attaching = null;
+        if (!this.devinExt) {
+          // pi-acp is single-proc: every session/load closeAllExcept()s the
+          // others. Those procs are already dead — mark them detached so
+          // their entries don't prompt into a void.
+          for (const o of this.sessions.values()) {
+            if (o !== s && o.attached) {
+              o.attached = false;
+              this.#broadcast(o.id, { type: "session_detached", sessionId: o.id }, { global: true });
+              this.#broadcast(o.id, { type: "session_state", sessionId: o.id, state: "free" }, { global: true });
+            }
+          }
+        }
         // Transcript is being replaced (mirror → live replay): bump gen so
         // clients reset, swap in the buffered replay, drop mirror state.
         s.gen++;
-        s.events = s.replayEvents || [];
+        // Post-timeout adopts arrive with replayEvents already nulled — keep
+        // the previous transcript rather than blanking it.
+        s.events = s.replayEvents || s.events || [];
         // Replay drops user prompts sent via ACP (they're not in
         // prompt_history) — graft them back from message_nodes.
         this.#injectUserMessages(s);
@@ -561,8 +604,19 @@ export class SessionHub extends EventEmitter {
         });
         this.#broadcast(sessionId, { type: "session_attached", sessionId }, { global: true });
         this.#broadcast(sessionId, { type: "session_state", sessionId, state: "held" }, { global: true });
+        // Resume parked prompts — the ghost turn that held them is gone now
+        // that a fresh proc is attached.
+        if (!s.prompting && s.queue.length) this.#drainQueue(s);
         return s;
-      })
+      };
+    s.attaching = Promise.race([
+      loadReq.then(onLoaded),
+      // A hung session/load (busy/wedged agent) must not hold s.attaching
+      // forever — it starves the sqlite mirror via the attaching guard.
+      new Promise((_, rej) =>
+        setTimeout(() => rej(new Error("session/load timed out")), ATTACH_TIMEOUT_MS)
+      ),
+    ])
       .catch((err) => {
         s.attaching = null;
         s.replayEvents = null;
@@ -581,9 +635,8 @@ export class SessionHub extends EventEmitter {
     // it — the agent DID load the session, so re-attach rather than leave a
     // held-by-us session in a permanently "failed" split-brain state.
     loadReq.then(
-      () => {
-        if (!s.attached && !s.attaching)
-          this.ensureAttached(sessionId, s.cwd).catch(() => {});
+      (res) => {
+        if (!s.attached && !s.attaching) onLoaded(res);
       },
       () => {}
     );
@@ -591,6 +644,15 @@ export class SessionHub extends EventEmitter {
   }
 
   async createSession(cwd) {
+    // pi-acp closeAllExcept()s every other session's proc on session/new —
+    // refuse while a sibling turn may still be running on its proc.
+    if (!this.devinExt) {
+      const now = Date.now();
+      for (const o of this.sessions.values()) {
+        if (o.prompting > 0 && now - (o.lastActiveAt || 0) < TURN_STALL_MS)
+          throw new Error("another session is still running — pi can only run one at a time");
+      }
+    }
     const res = await this.acp.request("session/new", { cwd, mcpServers: [] });
     const s = this.#entry(res.sessionId, cwd);
     s.attached = true;
@@ -1361,6 +1423,14 @@ export class SessionHub extends EventEmitter {
       const res = await this.acp.request("session/prompt", { sessionId, prompt: blocks });
       return res;
     } catch (e) {
+      // pi-acp may have killed this proc via another session's load/new
+      // (closeAllExcept) — the session id is then unknown. Mark it detached
+      // so the poll loop can reattach instead of failing forever.
+      if (s.attached && /unknown session|no such session|not found/i.test(String(e?.message))) {
+        s.attached = false;
+        s.attachWanted = true;
+        this.#broadcast(sessionId, { type: "session_detached", sessionId }, { global: true });
+      }
       // The prompt never ran — pull the optimistic entry back out so it
       // can't haunt future histories (the sender's client keeps its own
       // failed+retry bubble independently).
