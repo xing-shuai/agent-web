@@ -533,6 +533,10 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
   const RING_C = 2 * Math.PI * 7;
   const tps = useLiveTps(session.items, session.running);
 
+  // Timeline stamps dedupe by minute — a burst of same-minute rows shows
+  // the stamp once, not a column of identical labels.
+  let prevTlMin = null;
+
   return (
     <div className="chat">
       <header className="chat-head">
@@ -661,9 +665,12 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
               "col anim-in" + (w.spot ? " spot" : "") + (hits[hitNo] === w.key && searchQ.trim() ? " search-hit" : "")
             }
           >
-            {view === "timeline" && w.it.t != null && (
-              <span className="tl-time">{fmtHM(w.it.t)}</span>
-            )}
+            {view === "timeline" && w.it.t != null && (() => {
+              const m = fmtHM(w.it.t);
+              const show = m !== prevTlMin;
+              prevTlMin = m;
+              return show ? <span className="tl-time">{m}</span> : null;
+            })()}
             {w.turnStart && (
               <div className="turn-head">
                 <span className="turn-mark">
