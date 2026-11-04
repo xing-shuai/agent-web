@@ -261,6 +261,7 @@ app.post("/api/sessions", async (req, res) => {
     // Workspaces are shared and owned by the primary hub — a non-primary
     // hub's own addWorkspace only writes its private state file.
     if (h !== hub) hub.addWorkspace(cwd);
+    h.listCacheInvalidate();
     res.json(created);
   } catch (e) {
     res.status(502).json({ error: e.message });
@@ -279,7 +280,9 @@ app.post("/api/sessions/:id/rename", async (req, res) => {
   try {
     const title = String(req.body.title || "").trim();
     if (!title) return res.status(400).json({ error: "empty title" });
-    await hubFor(req.params.id).renameSession(req.params.id, title);
+    const h = hubFor(req.params.id);
+    await h.renameSession(req.params.id, title);
+    h.listCacheInvalidate();
     res.json({ ok: true });
   } catch (e) {
     res.status(502).json({ error: e.message });
@@ -288,7 +291,10 @@ app.post("/api/sessions/:id/rename", async (req, res) => {
 
 app.post("/api/sessions/:id/archive", async (req, res) => {
   try {
-    res.json(await hubFor(req.params.id).setArchived(req.params.id, !!req.body?.archived));
+    const h = hubFor(req.params.id);
+    const r = await h.setArchived(req.params.id, !!req.body?.archived);
+    h.listCacheInvalidate();
+    res.json(r);
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -296,7 +302,10 @@ app.post("/api/sessions/:id/archive", async (req, res) => {
 
 app.post("/api/sessions/:id/pin", async (req, res) => {
   try {
-    res.json(await hubFor(req.params.id).setPinned(req.params.id, !!req.body?.pinned));
+    const h = hubFor(req.params.id);
+    const r = await h.setPinned(req.params.id, !!req.body?.pinned);
+    h.listCacheInvalidate();
+    res.json(r);
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -318,7 +327,9 @@ app.post("/api/sessions/:id/fork", async (req, res) => {
 
 app.delete("/api/sessions/:id", async (req, res) => {
   try {
-    await hubFor(req.params.id).deleteSession(req.params.id);
+    const h = hubFor(req.params.id);
+    await h.deleteSession(req.params.id);
+    h.listCacheInvalidate();
     res.json({ ok: true });
   } catch (e) {
     res.status(502).json({ error: e.message });
@@ -571,6 +582,9 @@ setInterval(() => {
 
 server.listen(PORT, HOST, () => {
   console.log(`devin-web server listening on http://${HOST}:${PORT}`);
+  // Warm each agent (spawn + first list) so the first /api/sessions isn't
+  // stuck behind pi-acp's cold start. Cache fills in the background.
+  for (const h of hubs.values()) h.listSessions(undefined, { fresh: true }).catch(() => {});
 });
 
 for (const sig of ["SIGINT", "SIGTERM"]) {

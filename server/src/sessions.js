@@ -18,6 +18,7 @@ const MAX_BUFFERED_BYTES = 32 * 1024 * 1024;
 const GEN_WINDOW_MS = 25_000;
 const ACTIVE_WINDOW_MS = 120_000;
 const STATE_POLL_MS = 8_000;
+const LIST_CACHE_MS = 10_000;
 // Locked sessions: mirror transcript progress out of devin's sqlite store so
 // the web view updates live while the terminal CLI holds the lock. Polls are
 // cheap (a COUNT/MAX signature) and only open one shared read-only handle.
@@ -307,7 +308,7 @@ export class SessionHub extends EventEmitter {
         this.imgCache.delete(s.id);
       }
     }
-    const list = await this.listSessions();
+    const list = await this.listSessions(undefined, { fresh: true });
     const next = new Map();
     for (const it of list) {
       next.set(it.sessionId, it.state);
@@ -1117,7 +1118,13 @@ export class SessionHub extends EventEmitter {
     }
   }
 
-  async listSessions(cwd) {
+  async listSessions(cwd, { fresh = false } = {}) {
+    // pi's list walks its session dir (~1-3s for ~90 sessions) — serve a
+    // short cache to API callers; the state poll passes fresh:true and
+    // re-populates it. Mutations bust it via listCacheInvalidate().
+    const key = cwd || "";
+    const c = this._listCache;
+    if (!fresh && c && c.key === key && Date.now() - c.at < LIST_CACHE_MS) return c.data;
     // pi-acp filters an unscoped list by its last loaded/created session's
     // cwd (`params.cwd ?? lastSessionCwd`) — an explicit "" defeats that and
     // means "all". It also pages at 50, so follow nextCursor.
@@ -1157,7 +1164,12 @@ export class SessionHub extends EventEmitter {
         it.state = active ? "locked-active" : "locked";
       } else it.state = "free";
     }
+    this._listCache = { key, at: Date.now(), data: sessions };
     return sessions;
+  }
+
+  listCacheInvalidate() {
+    this._listCache = null;
   }
 
   /** Lightweight queue preview — goes in queue_update broadcasts + history. */
