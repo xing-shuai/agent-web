@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from "react";
-import { RefreshCw } from "lucide-react";
+import React, { useEffect, useRef, useState } from "react";
+import { Gauge, RefreshCw } from "lucide-react";
 import api from "../api.js";
 
 const fmtReset = (ts) => {
@@ -67,13 +67,13 @@ function SourceSection({ src }) {
   );
 }
 
-/** Per-account quota widget — one compact row per backing subscription
- *  (Devin plan, ChatGPT/Codex, DeepSeek balance…), expanding into per-source
- *  detail sections. Auto-refreshes every 5 min. */
+/** Account quota: a single toolbar button (Gauge + lowest remaining %),
+ *  opening a popover with per-source detail sections. 5 min refresh. */
 export default function AccountUsage() {
   const [data, setData] = useState(null);
   const [open, setOpen] = useState(false);
   const [err, setErr] = useState(null);
+  const ref = useRef(null);
 
   const load = () => {
     api
@@ -90,35 +90,32 @@ export default function AccountUsage() {
     return () => clearInterval(t);
   }, []);
 
+  useEffect(() => {
+    if (!open) return;
+    const close = (e) => {
+      if (!ref.current?.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+
   const sources = data?.sources || [];
   if (err || sources.length === 0) return null;
 
+  const rems = sources.flatMap((s) => (s.rows || []).map((r) => r.remaining)).filter(Number.isFinite);
+  const lowest = rems.length ? Math.min(...rems) : null;
+  const lowCls = lowest != null ? cls(lowest) : "";
+
   return (
-    <div className="acct-usage">
-      {sources.map((src) => (
-        <button
-          key={src.id}
-          className="acct-head"
-          onClick={() => setOpen((o) => !o)}
-          title={`${src.name}${src.plan ? " " + src.plan : ""} 用量 · 点击查看详情`}
-        >
-          <span className="acct-name">{src.name}</span>
-          <span className="acct-mini">
-            {src.error ? (
-              <span className="acct-item red">!</span>
-            ) : (
-              <>
-                {(src.rows || []).slice(0, 2).map((r) => (
-                  <span key={r.id} className={"acct-item " + cls(r.remaining)}>
-                    {r.short} {r.remaining}%
-                  </span>
-                ))}
-                {!src.rows?.length && src.mini && <span className="acct-item">{src.mini}</span>}
-              </>
-            )}
-          </span>
-        </button>
-      ))}
+    <div className="acct-pop" ref={ref}>
+      <button
+        className={"icon-ghost acct-btn" + (open ? " on" : "")}
+        title="账户用量"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <Gauge size={15} />
+        {lowest != null && <span className={"acct-lowest " + lowCls}>{lowest}%</span>}
+      </button>
       {open && (
         <div className="acct-panel">
           {sources.map((src) => (

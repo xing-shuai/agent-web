@@ -610,10 +610,10 @@ export default function Sidebar({
         </div>
       )}
 
-      <AccountUsage />
       <div className="sb-foot">
         <span className={"conn" + (wsUp ? " up" : "")} />
         <span>{wsUp ? "已连接" : "连接断开"}</span>
+        <AccountUsage />
         {onToggleNotify && (
           <button
             className={"icon-ghost" + (notifyEnabled ? " on" : "")}
