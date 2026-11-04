@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { EventEmitter } from "node:events";
+import { piUsageStats } from "./pi-stats.js";
 
 const MAX_BUFFERED_EVENTS = 8000;
 // Event payloads can each carry multi-hundred-KB outputs — cap the replay
@@ -141,6 +142,9 @@ export class SessionHub extends EventEmitter {
           this.#cappedSet(this.usageById, sessionId, update, MAX_USAGE_CACHE);
           this.state.usageById = Object.fromEntries(this.usageById);
           this.#saveState();
+          // pi's usage_update lands at turn settle — the session jsonl is
+          // complete at that point, so refresh the aggregate totals too.
+          this.#refreshPiStats(s);
         }
         s.lastActiveAt = Date.now();
       }
@@ -552,6 +556,7 @@ export class SessionHub extends EventEmitter {
           configOptions: s.configOptions,
           availableCommands: s.commands || this.commandsByCwd.get(s.cwd),
           usage: s.usage || this.usageById.get(sessionId),
+          stats: s.stats || null,
           queue: this.#queueView(s),
         });
         this.#broadcast(sessionId, { type: "session_attached", sessionId }, { global: true });
@@ -722,6 +727,7 @@ export class SessionHub extends EventEmitter {
         state: s.lockState || "locked",
         availableCommands: s.commands || this.commandsByCwd.get(s.cwd),
         usage: s.usage || this.usageById.get(s.id),
+        stats: s.stats || null,
         queue: this.#queueView(s),
       });
     } else {
@@ -1408,6 +1414,7 @@ export class SessionHub extends EventEmitter {
       configOptions: s.configOptions,
       availableCommands: s.commands || this.commandsByCwd.get(s.cwd),
       usage: s.usage || this.usageById.get(s.id),
+      stats: s.stats || null,
       queue: this.#queueView(s),
     });
   }
@@ -1638,6 +1645,24 @@ export class SessionHub extends EventEmitter {
     const s = this.sessions.get(sessionId);
     if (!s?.attached) return s?.lockState || "free";
     return s.prompting ? "working" : "held";
+  }
+
+  // Aggregate token/cost totals read from the session's own jsonl file
+  // (pi-only; devin reports its own usage via usage_update _meta).
+  statsFor(sessionId) {
+    if (this.agent !== "pi") return Promise.resolve(null);
+    return piUsageStats(sessionId).catch(() => null);
+  }
+
+  #refreshPiStats(s) {
+    if (this.agent !== "pi") return;
+    piUsageStats(s.id)
+      .then((stats) => {
+        if (!stats) return;
+        s.stats = stats;
+        this.#broadcast(s.id, { type: "session_stats", sessionId: s.id, stats });
+      })
+      .catch(() => {});
   }
 
   status() {

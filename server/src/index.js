@@ -603,8 +603,13 @@ wss.on("connection", (ws) => {
           const subscribedAt = Date.now();
           const h = hubFor(msg.sessionId);
           const s = h.subscribe(ws, msg.sessionId, msg.cwd);
+          // pi aggregate stats ride alongside history — pushed separately so
+          // attach-broadcast paths (which skip sendReady) don't starve them.
+          h.statsFor(msg.sessionId).then((stats) => {
+            if (stats) reply({ type: "session_stats", sessionId: msg.sessionId, stats });
+          });
           let sent = false;
-          const sendReady = () => {
+          const sendReady = async () => {
             if (sent) return;
             sent = true;
             // Skip re-sending a history this socket just received via the
@@ -626,6 +631,7 @@ wss.on("connection", (ws) => {
                 configOptions: s.configOptions,
                 availableCommands: s.commands || h.commandsByCwd.get(s.cwd),
                 usage: s.usage || h.usageById.get(msg.sessionId),
+                stats: s.stats || (await h.statsFor(msg.sessionId)),
                 queue: h.queueView?.(msg.sessionId) ?? [],
               });
             }

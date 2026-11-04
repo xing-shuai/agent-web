@@ -37,6 +37,47 @@ import { withToken } from "../api.js";
 const md = [remarkGfm];
 const hl = [[rehypeHighlight, { detect: false, ignoreMissing: true }]];
 
+// Live generation rate — same heuristic as pi-open-tui's telemetry: estimate
+// tokens from streamed text (~4 chars/token latin, ~1/char CJK) over a
+// trailing 2s window, sampled from the tail of the transcript.
+const CJK_RE = /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af\uf900-\ufaff\uff00-\uffef]/g;
+const estTok = (t) => {
+  const cjk = (t.match(CJK_RE) || []).length;
+  return cjk + (t.length - cjk) / 4;
+};
+
+function useLiveTps(items, running) {
+  const [tps, setTps] = useState(null);
+  const ref = useRef({ items, samples: [] });
+  ref.current.items = items;
+  useEffect(() => {
+    ref.current.samples = [];
+    if (!running) {
+      setTps(null);
+      return;
+    }
+    const iv = setInterval(() => {
+      const its = ref.current.items;
+      let tok = 0;
+      for (let i = its.length - 1; i >= 0; i--) {
+        const it = its[i];
+        if (it.kind === "agent" || it.kind === "thought") tok += it.text ? estTok(it.text) : 0;
+        else if (it.kind === "user") break;
+      }
+      const now = performance.now();
+      const s = ref.current.samples;
+      s.push({ t: now, tok });
+      while (s.length > 2 && s[1].t <= now - 2000) s.shift();
+      if (s.length >= 2) {
+        const v = (s.at(-1).tok - s[0].tok) / ((s.at(-1).t - s[0].t) / 1000);
+        setTps(v > 0.5 ? Math.round(v) : null);
+      }
+    }, 400);
+    return () => clearInterval(iv);
+  }, [running]);
+  return tps;
+}
+
 const fmtMs = (ms) => (ms == null ? "" : ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`);
 const fmtTok = (n) => (n == null ? "?" : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`);
 
@@ -473,6 +514,7 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
     : null;
   const meterColor = pct == null ? null : pct > 90 ? "var(--red)" : pct > 70 ? "var(--amber)" : "var(--accent)";
   const RING_C = 2 * Math.PI * 7;
+  const tps = useLiveTps(session.items, session.running);
 
   return (
     <div className="chat">
@@ -649,6 +691,7 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
           <div className="running-hint col">
             <Loader2 size={14} className="spin" />
             <span className="shimmer">{agentName} 正在工作</span>
+            {tps != null && <span className="tps"> ~{tps} tok/s</span>}
           </div>
         )}
         {!session.running && session.lastTurn && (
@@ -711,12 +754,13 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
           </>
         }
         meter={
-          pct != null && (
+          (pct != null || session.stats) && (
             <UsagePop
               up
               usage={session.usage}
               hist={session.usageHist}
               byAgent={session.usageByAgent}
+              stats={session.stats}
               trigger={
                 <>
                   <svg className="ctx-ring" width="18" height="18" viewBox="0 0 18 18">

@@ -3,8 +3,10 @@ import { ChartColumn } from "lucide-react";
 
 const fmt = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(1) + "k" : String(n ?? "–"));
 
-/** Context-usage popover: current usage + a sparkline of recent samples. */
-export default function UsagePop({ usage, hist, byAgent, up = false, trigger }) {
+/** Context-usage popover: current usage + a sparkline of recent samples.
+ *  `stats` (pi sessions): aggregate token/cost totals mined from the session
+ *  file — same numbers pi-open-tui's footer shows. */
+export default function UsagePop({ usage, hist, byAgent, stats, up = false, trigger }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
 
@@ -17,8 +19,8 @@ export default function UsagePop({ usage, hist, byAgent, up = false, trigger }) 
     return () => document.removeEventListener("mousedown", close);
   }, [open]);
 
-  if (!usage?.size) return null;
-  const pct = Math.min(100, Math.round((usage.used / usage.size) * 100));
+  if (!usage?.size && !stats) return null;
+  const pct = usage?.size ? Math.min(100, Math.round((usage.used / usage.size) * 100)) : null;
   const cls = pct > 90 ? "red" : pct > 70 ? "amber" : "";
 
   // sparkline from usage history samples (percentage of window used)
@@ -39,23 +41,57 @@ export default function UsagePop({ usage, hist, byAgent, up = false, trigger }) 
           <>
             <ChartColumn size={13} />
             <span>
-              {pct}% · {fmt(usage.used)}
+              {pct != null ? `${pct}% · ${fmt(usage.used)}` : fmt(stats?.input + stats?.output)}
             </span>
           </>
         )}
       </button>
       {open && (
         <div className={"usage-panel" + (up ? " up" : "")}>
-          <div className="usage-row">
-            <span>上下文</span>
-            <strong>
-              {fmt(usage.used)} / {fmt(usage.size)}
-            </strong>
-          </div>
-          <div className="usage-bar">
-            <div className={cls} style={{ width: `${pct}%` }} />
-          </div>
-          {(usage.input != null || usage.output != null) && (
+          {usage?.size && (
+            <>
+              <div className="usage-row">
+                <span>上下文</span>
+                <strong>
+                  {fmt(usage.used)} / {fmt(usage.size)}
+                </strong>
+              </div>
+              <div className="usage-bar">
+                <div className={cls} style={{ width: `${pct}%` }} />
+              </div>
+            </>
+          )}
+          {stats && (
+            <div className="usage-rows">
+              <div className="usage-sub" style={{ margin: "0 0 2px" }}>
+                会话累计
+              </div>
+              <div className="usage-row">
+                <span>输入</span>
+                <strong>{fmt(stats.input)}</strong>
+              </div>
+              <div className="usage-row">
+                <span>输出</span>
+                <strong>{fmt(stats.output)}</strong>
+              </div>
+              {stats.cacheRead > 0 && (
+                <div className="usage-row">
+                  <span>缓存读取</span>
+                  <strong>
+                    {fmt(stats.cacheRead)}
+                    {stats.cacheHitRate != null && ` · ${stats.cacheHitRate.toFixed(1)}%`}
+                  </strong>
+                </div>
+              )}
+              {stats.cost > 0 && (
+                <div className="usage-row">
+                  <span>费用</span>
+                  <strong>${stats.cost < 1 ? stats.cost.toFixed(3) : stats.cost.toFixed(2)}</strong>
+                </div>
+              )}
+            </div>
+          )}
+          {(usage?.input != null || usage?.output != null) && (
             <div className="usage-rows">
               {usage.input != null && (
                 <div className="usage-row">

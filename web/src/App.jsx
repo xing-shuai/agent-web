@@ -180,6 +180,7 @@ export default function App() {
                       cached: m.usage._meta?.["cognition.ai/cachedReadTokens"],
                     }
                   : folded.usage),
+              stats: m.stats ?? sd[m.sessionId]?.stats ?? null,
               queue: m.queue || sd[m.sessionId]?.queue || [],
               attached: m.attached,
               running: m.state === "working",
@@ -288,6 +289,7 @@ export default function App() {
           l.map((s) => (s.sessionId === m.sessionId ? { ...s, state: m.state } : s))
         );
       }),
+      wsClient.on("session_stats", (m) => patchSession(m.sessionId, { stats: m.stats })),
       wsClient.on("attach_error", (m) =>
         patchSession(m.sessionId, {
           attached: false,

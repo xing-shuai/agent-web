@@ -929,6 +929,7 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
   -webkit-text-fill-color: transparent; color: transparent;
   animation: shimmer 1.6s linear infinite;
 }
+.running-hint .tps { color: var(--accent); font-family: var(--mono); }
 @keyframes shimmer { to { background-position: -200% 0; } }
 
 /* queued prompts — server-side FIFO shown above the running hint */
