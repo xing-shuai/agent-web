@@ -87,6 +87,7 @@ export const VIEWS = [
   { value: "focus", name: "专注", description: "收窄居中，减少干扰" },
   { value: "terminal", name: "终端", description: "等宽字体命令行风格" },
   { value: "notebook", name: "笔记", description: "Jupyter 式编号单元格" },
+  { value: "paper", name: "纸张", description: "横线稿纸 + 红色边距线" },
   { value: "spotlight", name: "聚光", description: "淡化旧内容，突出当前轮" },
   { value: "plain", name: "纯文本", description: "去掉所有装饰和容器" },
 ];

@@ -810,10 +810,14 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
 .msg { margin-bottom: 18px; }
 .msg.user { display: flex; flex-direction: column; align-items: flex-end; position: relative; }
 .msg-actions {
-  position: absolute; left: -136px; top: 50%; transform: translateY(-50%);
-  display: flex; gap: 2px; opacity: 0; transition: opacity .15s;
+  position: absolute; right: 6px; top: -14px; z-index: 2;
+  display: flex; gap: 2px; padding: 2px;
+  background: var(--elevated); border: 1px solid var(--border);
+  border-radius: 9px; box-shadow: var(--shadow-sm);
+  opacity: 0; transform: translateY(4px);
+  transition: opacity .15s ease, transform .15s ease;
 }
-.msg.user:hover .msg-actions { opacity: 1; }
+.msg.user:hover .msg-actions { opacity: 1; transform: translateY(0); }
 .msg-actions button {
   border: none; background: none; color: var(--text-3); cursor: pointer;
   padding: 4px; border-radius: 5px; display: flex;
@@ -830,7 +834,11 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
   border-radius: 18px; border-bottom-right-radius: 6px;
   padding: 10px 16px; font-size: calc(14px * var(--tfs,1)); line-height: 1.6;
   white-space: pre-wrap; word-break: break-word;
+  transition: transform .15s ease, box-shadow .15s ease;
 }
+/* Codex-style: the sent card lifts slightly on hover while its action pill
+   floats in over the top-right corner. */
+.msg.user:hover .msg-bubble { transform: translateY(-1px); box-shadow: var(--shadow-md); }
 .msg.agent { color: var(--text); }
 .agent-body { font-size: calc(14px * var(--tfs,1)); line-height: 1.7; min-width: 0; }
 .agent-body > :first-child { margin-top: 0; }
@@ -1770,21 +1778,50 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
 [data-view="terminal"] .input-card textarea { font-family: var(--mono); }
 
 /* ---------- 时间线 timeline: left rail + dots ---------- */
-[data-view="timeline"] .col { position: relative; }
-[data-view="timeline"] .col::before {
-  content: ""; position: absolute; left: 11px; top: -80px; bottom: -80px;
+/* Scoped to .transcript — bare .col also matches the composer/permission
+   cols inside .dock, which dragged the rail into the input area. */
+[data-view="timeline"] .transcript .col { position: relative; }
+[data-view="timeline"] .transcript .col::before {
+  content: ""; position: absolute; left: 11px; top: -28px; bottom: -28px;
   width: 2px; background: var(--border);
 }
-[data-view="timeline"] .col::after {
+[data-view="timeline"] .transcript .col::after {
   content: ""; position: absolute; left: 6px; top: 14px;
   width: 10px; height: 10px; border-radius: 50%;
   background: var(--bg); border: 2px solid var(--border-strong);
 }
-[data-view="timeline"] .col:has(.msg.user)::after {
-  background: var(--accent); border-color: var(--accent);
+[data-view="timeline"] .transcript .col:has(.msg.user)::after {
+  top: 20px; background: var(--accent); border-color: var(--accent);
 }
-[data-view="timeline"] .col:has(.turn-head)::after { top: 30px; }
+[data-view="timeline"] .transcript .col:has(.turn-head)::after { top: 30px; }
 [data-view="timeline"] .turn-head { padding-left: 14px; }
+[data-view="timeline"] .tl-time {
+  position: absolute; right: 0; top: 2px;
+  font-size: calc(10px * var(--tfs,1)); font-family: var(--mono); color: var(--text-3);
+}
+[data-view="timeline"] .col:has(.turn-head) .tl-time { top: 29px; }
+[data-view="timeline"] .msg.user { padding-top: 15px; }
+
+/* ---------- 纸张 paper: ruled notebook lines + left margin ---------- */
+[data-view="paper"] .transcript {
+  background-image: repeating-linear-gradient(
+    to bottom, transparent 0, transparent 27px,
+    color-mix(in srgb, var(--border-strong) 50%, transparent) 27px,
+    color-mix(in srgb, var(--border-strong) 50%, transparent) 28px
+  );
+}
+[data-view="paper"] .transcript .col { position: relative; }
+[data-view="paper"] .transcript .col::before {
+  content: ""; position: absolute; left: 8px; top: -30px; bottom: -30px;
+  width: 1.5px; background: color-mix(in srgb, var(--red) 28%, transparent);
+}
+[data-view="paper"] .transcript .col > * { margin-left: 26px; }
+[data-view="paper"] .msg.user { align-items: flex-start; }
+[data-view="paper"] .msg-actions { right: auto; left: 30px; }
+[data-view="paper"] .msg.user .msg-bubble {
+  border-radius: 4px; border-bottom-right-radius: 4px;
+}
+[data-view="paper"] .msg-imgs { justify-content: flex-start; }
 
 /* ---------- 紧凑 compact: denser everything ---------- */
 [data-view="compact"] .transcript { font-size: calc(13px * var(--tfs,1)); }

@@ -30,18 +30,18 @@ export function emptySession() {
 let seq = 0;
 const key = () => `it-${seq++}`;
 
-function appendText(items, kind, text) {
+function appendText(items, kind, text, t) {
   const last = items[items.length - 1];
   if (last && last.kind === kind) {
     return [...items.slice(0, -1), { ...last, text: last.text + text }];
   }
-  return [...items, { key: key(), kind, text }];
+  return [...items, { key: key(), kind, text, t }];
 }
 
-function updateTool(items, toolCallId, fields) {
+function updateTool(items, toolCallId, fields, t) {
   const idx = items.findIndex((i) => i.kind === "tool" && i.toolCallId === toolCallId);
   if (idx === -1) {
-    return [...items, { key: key(), kind: "tool", toolCallId, ...fields }];
+    return [...items, { key: key(), kind: "tool", toolCallId, t, ...fields }];
   }
   const cur = items[idx];
   const merged = { ...cur };
@@ -63,8 +63,10 @@ function updateTool(items, toolCallId, fields) {
 const textOf = (content) =>
   content && content.type === "text" ? content.text : content?.text || "";
 
-/** Apply one session/update payload to a session state object. */
-export function applyUpdate(s, update) {
+/** Apply one session/update payload to a session state object.
+ *  `t` = event wall-clock (ms) — stamped on newly created items so views
+ *  (e.g. timeline) can show per-row timestamps. */
+export function applyUpdate(s, update, t) {
   if (!update) return s;
   const u = update;
   switch (u.sessionUpdate) {
@@ -87,7 +89,7 @@ export function applyUpdate(s, update) {
             items: [...s.items.slice(0, -1), { ...last, images: [...(last.images || []), src] }],
           };
         }
-        return { ...s, items: [...s.items, { key: key(), kind: "user", text: "", images: [src] }] };
+        return { ...s, items: [...s.items, { key: key(), kind: "user", text: "", images: [src], t }] };
       }
       const text = textOf(u.content);
       const last = s.items[s.items.length - 1];
@@ -99,14 +101,14 @@ export function applyUpdate(s, update) {
           return { ...s, items: [...s.items.slice(0, -1), { ...last, text, optimistic: false }] };
         }
         const items = s.items.map((it, i) => (i === s.items.length - 1 ? { ...it, optimistic: false } : it));
-        return { ...s, items: [...items, { key: key(), kind: "user", text }] };
+        return { ...s, items: [...items, { key: key(), kind: "user", text, t }] };
       }
-      return { ...s, items: appendText(s.items, "user", text) };
+      return { ...s, items: appendText(s.items, "user", text, t) };
     }
     case "agent_message_chunk":
-      return { ...s, items: appendText(s.items, "agent", textOf(u.content)) };
+      return { ...s, items: appendText(s.items, "agent", textOf(u.content), t) };
     case "agent_thought_chunk":
-      return { ...s, items: appendText(s.items, "thought", textOf(u.content)) };
+      return { ...s, items: appendText(s.items, "thought", textOf(u.content), t) };
     case "tool_call":
       return {
         ...s,
@@ -120,7 +122,7 @@ export function applyUpdate(s, update) {
           rawInput: u.rawInput,
           rawOutput: u.rawOutput,
           images: u.images,
-        }),
+        }, t),
       };
     case "tool_call_update":
       return {
@@ -133,11 +135,11 @@ export function applyUpdate(s, update) {
           locations: u.locations,
           rawOutput: u.rawOutput,
           images: u.images,
-        }),
+        }, t),
       };
     case "plan": {
       const idx = s.items.findIndex((i) => i.kind === "plan");
-      const item = { key: idx === -1 ? key() : s.items[idx].key, kind: "plan", entries: u.entries || [] };
+      const item = { key: idx === -1 ? key() : s.items[idx].key, kind: "plan", entries: u.entries || [], t: s.items[idx]?.t ?? t };
       const items = idx === -1 ? [...s.items, item] : [...s.items.slice(0, idx), item, ...s.items.slice(idx + 1)];
       return { ...s, items };
     }
@@ -180,6 +182,6 @@ export function applyUpdate(s, update) {
 export function foldEvents(events) {
   const s = emptySession();
   let cur = s;
-  for (const e of events) cur = applyUpdate(cur, e.update);
+  for (const e of events) cur = applyUpdate(cur, e.update, e.t);
   return cur;
 }

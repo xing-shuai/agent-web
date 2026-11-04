@@ -79,6 +79,7 @@ function useLiveTps(items, running) {
 }
 
 const fmtMs = (ms) => (ms == null ? "" : ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`);
+const fmtHM = (t) => new Date(t).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
 const fmtTok = (n) => (n == null ? "?" : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`);
 
 function shortCwd(cwd, home) {
@@ -644,6 +645,9 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
               "col anim-in" + (w.spot ? " spot" : "") + (hits[hitNo] === w.key && searchQ.trim() ? " search-hit" : "")
             }
           >
+            {view === "timeline" && w.it.t != null && (
+              <span className="tl-time">{fmtHM(w.it.t)}</span>
+            )}
             {w.turnStart && (
               <div className="turn-head">
                 <span className="turn-mark">

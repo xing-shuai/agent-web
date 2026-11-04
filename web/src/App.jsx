@@ -213,7 +213,7 @@ export default function App() {
                 // matching consolidated `history` rebuilds it atomically.
                 if (mm.gen !== undefined && cur.gen >= 0 && mm.gen !== cur.gen) continue;
                 if (cur.gen < 0 && mm.gen !== undefined) cur = { ...cur, gen: mm.gen };
-                cur = applyUpdate(cur, mm.update);
+                cur = applyUpdate(cur, mm.update, mm.t || Date.now());
               }
               if (cur !== s) {
                 if (next === sd) next = { ...sd };
