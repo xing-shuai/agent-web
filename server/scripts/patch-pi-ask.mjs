@@ -32,19 +32,20 @@ if (!file) {
   process.exit(0);
 }
 let src = readFileSync(file, "utf8");
-if (src.includes(MARKER)) {
-  console.log("patch-pi-ask: already patched");
-  process.exit(0);
-}
+
+// Re-runnable: a previously-patched file has the swap applied but its
+// appended flow may be stale — cut the old block and re-append below.
+const blockStart = src.indexOf(`\n// ${MARKER}: sequential fallback`);
+if (blockStart >= 0) src = src.slice(0, blockStart);
 
 // 1) widen the types import
 const impFrom = 'import type { AskParams } from "./types.ts";';
 const impTo = 'import type { AskParams, AskResult, AskResultAnswer } from "./types.ts";';
-if (!src.includes(impFrom)) {
+if (src.includes(impFrom)) src = src.replace(impFrom, impTo);
+else if (!src.includes(impTo)) {
   console.error(`patch-pi-ask: import anchor not found in ${file}`);
   process.exit(1);
 }
-src = src.replace(impFrom, impTo);
 
 // 2) swap the non-tui early-return for the degraded flow
 const retFrom = `	if (ctx.mode !== "tui") {
@@ -59,11 +60,11 @@ const retTo = `	if (ctx.mode !== "tui") {
 			return nonInteractiveResponse(validation.state);
 		}
 	}`;
-if (!src.includes(retFrom)) {
+if (src.includes(retFrom)) src = src.replace(retFrom, retTo);
+else if (!src.includes("runRpcAskFlow(ctx, validation.state)")) {
   console.error(`patch-pi-ask: non-interactive return anchor not found in ${file}`);
   process.exit(1);
 }
-src = src.replace(retFrom, retTo);
 
 // 3) append the degraded flow
 src += `
@@ -79,6 +80,7 @@ async function runRpcAskFlow(
 	const questions = state.questions;
 	const answers: Record<string, AskResultAnswer> = {};
 	const DONE = "✓ 完成选择";
+	const OTHER = "✏️ 自定义输入…";
 	let cancelled = false;
 
 	for (const q of questions) {
@@ -87,32 +89,47 @@ async function runRpcAskFlow(
 		const title =
 			q.label && q.label !== q.prompt ? \`\${q.label} — \${q.prompt}\` : q.prompt || q.id;
 		const picked: number[] = [];
-		let customText: string | undefined;
+		const customTexts: string[] = [];
 
 		if (opts.length === 0) {
-			customText = await ui.input(title, "输入回答");
-			if (customText === undefined) cancelled = true;
+			const t = await ui.input(title, "输入回答");
+			if (t === undefined) cancelled = true;
+			else if (t) customTexts.push(t);
 		} else if (q.type === "multi") {
 			const remaining = opts.map((_o, i) => i);
-			while (remaining.length) {
+			while (true) {
 				const sel = await ui.select(
 					picked.length ? \`\${title}(已选 \${picked.length} 项)\` : title,
-					[DONE, ...remaining.map((i) => labels[i])]
+					[DONE, ...remaining.map((i) => labels[i]), OTHER]
 				);
 				if (sel === undefined) {
 					cancelled = true;
 					break;
 				}
 				if (sel === DONE) break;
+				if (sel === OTHER) {
+					const t = await ui.input(title, "输入自定义内容");
+					if (t === undefined) {
+						cancelled = true;
+						break;
+					}
+					if (t) customTexts.push(t);
+					continue;
+				}
 				const i = labels.indexOf(sel);
 				if (i < 0) break;
 				picked.push(i);
 				remaining.splice(remaining.indexOf(i), 1);
+				if (!remaining.length) break;
 			}
 		} else {
-			const sel = await ui.select(title, labels);
+			const sel = await ui.select(title, [...labels, OTHER]);
 			if (sel === undefined) cancelled = true;
-			else {
+			else if (sel === OTHER) {
+				const t = await ui.input(title, "输入自定义内容");
+				if (t === undefined) cancelled = true;
+				else if (t) customTexts.push(t);
+			} else {
 				const i = labels.indexOf(sel);
 				if (i >= 0) picked.push(i);
 			}
@@ -121,16 +138,18 @@ async function runRpcAskFlow(
 
 		const freeformIdx = picked.find((i) => opts[i]?.freeform);
 		if (freeformIdx !== undefined) {
-			customText = await ui.input(
+			const t = await ui.input(
 				title,
 				opts[freeformIdx]?.description ?? "输入自定义内容"
 			);
-			if (customText === undefined) {
+			if (t === undefined) {
 				cancelled = true;
 				break;
 			}
+			if (t) customTexts.push(t);
 		}
 
+		const customText = customTexts.join("；") || undefined;
 		if (picked.length || customText !== undefined || !q.required) {
 			answers[q.id] = {
 				indices: picked,
