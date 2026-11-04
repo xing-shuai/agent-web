@@ -1151,6 +1151,15 @@ export class SessionHub extends EventEmitter {
       cursor = res.nextCursor;
       if (!cursor) break;
     }
+    // Tombstones hide sessions whose agent-side delete is still in flight —
+    // otherwise a concurrent poll re-adds the row while pi-acp's walk-based
+    // delete hasn't unlinked the file yet (delete flicker).
+    if (this._tombstones?.size) {
+      const now = Date.now();
+      for (const [id, exp] of this._tombstones) if (exp <= now) this._tombstones.delete(id);
+      for (let i = sessions.length - 1; i >= 0; i--)
+        if (this._tombstones.has(sessions[i].sessionId)) sessions.splice(i, 1);
+    }
     const activity = this.#activityProbe();
     const now = Date.now();
     for (const it of sessions) {
@@ -1478,12 +1487,16 @@ export class SessionHub extends EventEmitter {
     // pi-acp's delete does a full session-dir walk (~seconds) — don't hold
     // the API on it; re-list once the store has actually settled instead.
     if (this.devinExt) await del;
-    else
+    else {
+      // Hide the row from every list until the agent-side delete has had
+      // time to land — a mid-flight poll would otherwise re-add it.
+      (this._tombstones ||= new Map()).set(sessionId, Date.now() + 60_000);
       del.finally(() => {
         this.listCacheInvalidate();
         // Repopulate in the background so the next /api/sessions stays fast.
         this.listSessions(undefined, { fresh: true }).catch(() => {});
       });
+    }
     this.listCacheRemove(sessionId);
     const s = this.sessions.get(sessionId);
     if (s) {
