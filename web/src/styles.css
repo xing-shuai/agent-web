@@ -1360,7 +1360,9 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
 .plan-row.pending .plan-ic { color: var(--text-3); }
 
 /* ================= permission ================= */
-.perm-stack { margin: 26px auto 0; }
+/* Must paint above .dock::before (absolute blur overlay) — a static child
+   would get blurred as part of the backdrop. */
+.perm-stack { position: relative; z-index: 1; margin: 26px auto 0; }
 .perm-card {
   border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent);
   border-radius: var(--r-md); padding: 13px 15px;
