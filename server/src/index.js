@@ -97,54 +97,202 @@ app.get("/api/state", (_req, res) => {
   res.json({ workspaces: hub.workspaces, home: os.homedir(), sessions: hub.state.sessions });
 });
 
-// ---------- account quota (seat_management GetUserStatus) ----------
-// The CLI's TUI /usage panel reads plan quota off the same RPC. api.devin.ai
-// v3 consumption endpoints are enterprise-only, so quota data comes from the
-// windsurf backend using the CLI's own session token.
+// ---------- account quota ----------
+// Aggregates subscription/quota info for every configured agent's backing
+// accounts. Devin quota comes from the windsurf seat-management RPC (same RPC
+// the CLI /usage panel reads). Pi providers are queried directly: openai-codex
+// via ChatGPT's wham/usage endpoint with pi's OAuth creds, deepseek via its
+// balance API. Missing creds simply omit a source; fetch errors surface as a
+// per-source `error` so one dead provider can't blank the whole widget.
 let _usageCache = { at: 0, data: null };
-app.get("/api/account/usage", async (_req, res) => {
+
+const windowLabel = (secs) => {
+  if (!secs) return { label: "配额", short: "配额" };
+  if (secs % 604800 === 0) return { label: "周配额", short: "周" };
+  if (secs < 86400) return { label: `${Math.round(secs / 3600)}小时配额`, short: `${Math.round(secs / 3600)}h` };
+  return { label: `${Math.round(secs / 86400)}天配额`, short: `${Math.round(secs / 86400)}d` };
+};
+
+const rateWindowRow = (win, idPrefix, pos) => {
+  const used = Number(win?.used_percent);
+  if (!Number.isFinite(used)) return null;
+  const { label, short } = windowLabel(Number(win.limit_window_seconds) || 0);
+  return {
+    id: `${idPrefix}:${pos}`,
+    label,
+    short,
+    remaining: Math.max(0, Math.min(100, 100 - used)),
+    resetAt: win.reset_at ? Number(win.reset_at) * 1000 : null,
+  };
+};
+
+const rateLimitRows = (rl, idPrefix) => {
+  if (!rl || typeof rl !== "object") return [];
+  return [rateWindowRow(rl.primary_window, idPrefix, "primary"), rateWindowRow(rl.secondary_window, idPrefix, "secondary")].filter(Boolean);
+};
+
+async function fetchDevinUsageSource() {
+  const credPath = path.join(os.homedir(), ".local/share/devin/credentials.toml");
+  if (!fs.existsSync(credPath)) return null;
+  const cred = fs.readFileSync(credPath, "utf8");
+  const grab = (k) => cred.match(new RegExp(`${k}\\s*=\\s*"([^"]*)"`))?.[1];
+  const apiKey = grab("windsurf_api_key");
+  const server = grab("api_server_url") || "https://server.codeium.com";
+  if (!apiKey) return null;
+  const r = await fetch(`${server}/exa.seat_management_pb.SeatManagementService/GetUserStatus`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Connect-Protocol-Version": "1" },
+    body: JSON.stringify({
+      metadata: { apiKey, ideName: "devin", ideVersion: "1.0.0", extensionName: "devin", extensionVersion: "1.0.0", locale: "en" },
+    }),
+    signal: AbortSignal.timeout(12_000),
+  });
+  if (!r.ok) throw new Error(`upstream ${r.status}`);
+  const j = await r.json();
+  const ps = j.userStatus?.planStatus || {};
+  const pi = ps.planInfo || {};
+  const rows = [];
+  if (ps.dailyQuotaRemainingPercent != null && !pi.hideDailyQuota)
+    rows.push({ id: "daily", label: "日配额", short: "日", remaining: Number(ps.dailyQuotaRemainingPercent), resetAt: ps.dailyQuotaResetAtUnix ? Number(ps.dailyQuotaResetAtUnix) * 1000 : null });
+  if (ps.weeklyQuotaRemainingPercent != null)
+    rows.push({ id: "weekly", label: "周配额", short: "周", remaining: Number(ps.weeklyQuotaRemainingPercent), resetAt: ps.weeklyQuotaResetAtUnix ? Number(ps.weeklyQuotaResetAtUnix) * 1000 : null });
+  const extras = [];
+  if (ps.overageBalanceMicros != null && Number(ps.overageBalanceMicros) !== 0)
+    extras.push({ label: "超额余额", value: (Number(ps.overageBalanceMicros) / 1e6).toFixed(2) });
+  if (ps.availablePromptCredits != null && Number(ps.availablePromptCredits) >= 0)
+    extras.push({ label: "剩余额度", value: String(Number(ps.availablePromptCredits)) });
+  return {
+    id: "devin",
+    name: "Devin",
+    plan: pi.planName || j.userStatus?.planInfo?.planName || null,
+    email: j.userStatus?.email || null,
+    rows,
+    extras,
+    period: ps.planEnd ? { start: ps.planStart || null, end: ps.planEnd } : null,
+  };
+}
+
+const PI_AUTH_PATH = path.join(os.homedir(), ".pi/agent/auth.json");
+const CODEX_TOKEN_URL = "https://auth.openai.com/oauth/token";
+const CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
+const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
+
+function readPiAuth() {
   try {
-    if (Date.now() - _usageCache.at < 60_000 && _usageCache.data) return res.json(_usageCache.data);
-    const credPath = path.join(os.homedir(), ".local/share/devin/credentials.toml");
-    const cred = fs.readFileSync(credPath, "utf8");
-    const grab = (k) => cred.match(new RegExp(`${k}\\s*=\\s*"([^"]*)"`))?.[1];
-    const apiKey = grab("windsurf_api_key");
-    const server = grab("api_server_url") || "https://server.codeium.com";
-    if (!apiKey) return res.status(503).json({ error: "no devin credentials" });
-    const r = await fetch(`${server}/exa.seat_management_pb.SeatManagementService/GetUserStatus`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Connect-Protocol-Version": "1" },
-      body: JSON.stringify({
-        metadata: { apiKey, ideName: "devin", ideVersion: "1.0.0", extensionName: "devin", extensionVersion: "1.0.0", locale: "en" },
-      }),
+    return JSON.parse(fs.readFileSync(PI_AUTH_PATH, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+// Refresh pi's openai-codex OAuth grant and write it back atomically so the
+// rotated refresh token stays usable by pi itself.
+async function refreshCodexAuth(auth, cred) {
+  const r = await fetch(CODEX_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: cred.refresh, client_id: CODEX_CLIENT_ID }),
+    signal: AbortSignal.timeout(12_000),
+  });
+  if (!r.ok) throw new Error(`codex token refresh ${r.status}`);
+  const j = await r.json();
+  if (!j.access_token || !j.refresh_token || typeof j.expires_in !== "number") throw new Error("codex token refresh returned incomplete data");
+  const next = { ...cred, access: j.access_token, refresh: j.refresh_token, expires: Date.now() + j.expires_in * 1000 };
+  const updated = { ...auth, "openai-codex": next };
+  const tmp = PI_AUTH_PATH + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(updated, null, 2), { mode: 0o600 });
+  fs.renameSync(tmp, PI_AUTH_PATH);
+  return next;
+}
+
+async function fetchCodexUsageSource() {
+  const auth = readPiAuth();
+  let cred = auth?.["openai-codex"];
+  if (!cred?.access) return null;
+  if (cred.refresh && Number(cred.expires) - Date.now() < 60_000) {
+    cred = await refreshCodexAuth(auth, cred);
+  }
+  const get = () =>
+    fetch(CODEX_USAGE_URL, {
+      headers: { Authorization: `Bearer ${cred.access}`, "chatgpt-account-id": cred.accountId || "", "User-Agent": "agent-web" },
       signal: AbortSignal.timeout(12_000),
     });
-    if (!r.ok) throw new Error(`upstream ${r.status}`);
-    const j = await r.json();
-    const ps = j.userStatus?.planStatus || {};
-    const pi = ps.planInfo || {};
-    const data = {
-      plan: pi.planName || j.userStatus?.planInfo?.planName || null,
-      tier: j.userStatus?.teamsTier || null,
-      email: j.userStatus?.email || null,
-      billingStrategy: pi.billingStrategy || null,
-      planStart: ps.planStart || null,
-      planEnd: ps.planEnd || null,
-      hideDaily: !!pi.hideDailyQuota,
-      daily: ps.dailyQuotaRemainingPercent != null
-        ? { remaining: ps.dailyQuotaRemainingPercent, resetAt: ps.dailyQuotaResetAtUnix ? Number(ps.dailyQuotaResetAtUnix) * 1000 : null }
-        : null,
-      weekly: ps.weeklyQuotaRemainingPercent != null
-        ? { remaining: ps.weeklyQuotaRemainingPercent, resetAt: ps.weeklyQuotaResetAtUnix ? Number(ps.weeklyQuotaResetAtUnix) * 1000 : null }
-        : null,
-      overageMicros: ps.overageBalanceMicros != null ? Number(ps.overageBalanceMicros) : null,
-      promptCredits: ps.availablePromptCredits != null ? Number(ps.availablePromptCredits) : null,
-    };
-    _usageCache = { at: Date.now(), data };
-    res.json(data);
-  } catch (e) {
-    res.status(502).json({ error: String(e.message || e) });
+  let r = await get();
+  if (r.status === 401 && cred.refresh) {
+    cred = await refreshCodexAuth(auth, cred);
+    r = await get();
   }
+  if (!r.ok) throw new Error(`codex usage ${r.status}`);
+  const j = await r.json();
+  const rows = rateLimitRows(j.rate_limit, "codex");
+  for (const extra of j.additional_rate_limits || []) {
+    const id = extra?.metered_feature || extra?.limit_name || "extra";
+    rows.push(...rateLimitRows(extra?.rate_limit, `codex:${id}`));
+  }
+  rows.push(...rateLimitRows(j.code_review_rate_limit, "codex:review"));
+  const extras = [];
+  const credits = j.credits;
+  if (credits?.has_credits === true) {
+    if (credits.unlimited === true) extras.push({ label: "积分", value: "无限" });
+    else if (credits.balance != null) extras.push({ label: "积分余额", value: String(Math.round(Number(credits.balance) || 0)) });
+  }
+  const resetCredits = Number(j.rate_limit_reset_credits?.available_count);
+  if (Number.isFinite(resetCredits) && resetCredits > 0) extras.push({ label: "可用重置次数", value: String(resetCredits) });
+  const plan = j.plan_type ? String(j.plan_type) : null;
+  return { id: "pi-codex", agent: "pi", name: "Codex", plan: plan ? plan[0].toUpperCase() + plan.slice(1) : null, email: j.email || null, rows, extras };
+}
+
+async function fetchDeepseekUsageSource() {
+  let key = null;
+  try {
+    const models = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".pi/agent/models.json"), "utf8"));
+    for (const [id, p] of Object.entries(models?.providers || {})) {
+      if (id === "deepseek" || p?.baseUrl?.includes("api.deepseek.com")) {
+        if (p.apiKey) {
+          key = p.apiKey;
+          break;
+        }
+      }
+    }
+  } catch {
+    return null;
+  }
+  if (!key) return null;
+  const r = await fetch("https://api.deepseek.com/user/balance", {
+    headers: { Authorization: `Bearer ${key}` },
+    signal: AbortSignal.timeout(12_000),
+  });
+  if (!r.ok) throw new Error(`deepseek balance ${r.status}`);
+  const j = await r.json();
+  const extras = [];
+  let mini = null;
+  for (const b of j.balance_infos || []) {
+    const total = b.total_balance ?? b.totalBalance;
+    if (total == null) continue;
+    const cur = b.currency || "";
+    const val = `${cur === "CNY" ? "¥" : cur === "USD" ? "$" : cur + " "}${total}`;
+    if (!mini) mini = val;
+    const detail = [b.topped_up_balance != null ? `充值 ${b.topped_up_balance}` : null, b.granted_balance != null ? `赠金 ${b.granted_balance}` : null].filter(Boolean).join(" · ");
+    extras.push({ label: `余额 ${cur}`, value: val, sub: detail || undefined });
+  }
+  if (extras.length === 0) extras.push({ label: "余额", value: j.is_available ? "可用" : "不可用" });
+  return { id: "pi-deepseek", agent: "pi", name: "DeepSeek", plan: "API", rows: [], extras, mini };
+}
+
+app.get("/api/account/usage", async (_req, res) => {
+  if (Date.now() - _usageCache.at < 60_000 && _usageCache.data) return res.json(_usageCache.data);
+  const fetchers = [fetchDevinUsageSource, fetchCodexUsageSource, fetchDeepseekUsageSource];
+  const names = ["Devin", "Codex", "DeepSeek"];
+  const settled = await Promise.allSettled(fetchers.map((f) => f()));
+  const sources = settled
+    .map((s, i) => {
+      if (s.status === "rejected") return { id: `err-${i}`, name: names[i], error: String(s.reason?.message || s.reason), rows: [], extras: [] };
+      return s.value;
+    })
+    .filter(Boolean);
+  const data = { sources };
+  _usageCache = { at: Date.now(), data };
+  res.json(data);
 });
 
 // ---------- filesystem browsing (workspace picker) ----------

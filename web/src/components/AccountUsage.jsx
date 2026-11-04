@@ -31,8 +31,45 @@ function Bar({ label, remaining, resetAt }) {
   );
 }
 
-/** Account plan quota card — daily/weekly remaining % from the seat-management
- *  RPC, same data the CLI /usage panel shows. Auto-refreshes every 5 min. */
+function SourceSection({ src }) {
+  return (
+    <div className="acct-src">
+      <div className="acct-src-title">
+        <span>{src.name}</span>
+        {src.plan && <em className="acct-src-plan">{src.plan}</em>}
+        {src.email && <em className="acct-src-mail">{src.email}</em>}
+      </div>
+      {src.error ? (
+        <div className="acct-err">{src.error}</div>
+      ) : (
+        <>
+          {(src.rows || []).map((r) => (
+            <Bar key={r.id} label={r.label} remaining={r.remaining} resetAt={r.resetAt} />
+          ))}
+          {(src.extras || []).map((e, i) => (
+            <div key={i}>
+              <div className="acct-line">
+                <span>{e.label}</span>
+                <strong>{e.value}</strong>
+              </div>
+              {e.sub && <div className="acct-sub">{e.sub}</div>}
+            </div>
+          ))}
+          {src.period?.end && (
+            <div className="acct-sub">
+              计费周期 {src.period.start ? new Date(src.period.start).toLocaleDateString() : "?"} ~{" "}
+              {new Date(src.period.end).toLocaleDateString()}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Per-account quota widget — one compact row per backing subscription
+ *  (Devin plan, ChatGPT/Codex, DeepSeek balance…), expanding into per-source
+ *  detail sections. Auto-refreshes every 5 min. */
 export default function AccountUsage() {
   const [data, setData] = useState(null);
   const [open, setOpen] = useState(false);
@@ -53,48 +90,42 @@ export default function AccountUsage() {
     return () => clearInterval(t);
   }, []);
 
-  if (err || !data) return null;
-  const showDaily = data.daily && !data.hideDaily;
+  const sources = data?.sources || [];
+  if (err || sources.length === 0) return null;
 
   return (
     <div className="acct-usage">
-      <button className="acct-head" onClick={() => setOpen((o) => !o)} title="套餐配额 · 点击查看详情">
-        <Gauge size={13} />
-        <span className="acct-plan">{data.plan || "Devin"}</span>
-        <span className="acct-mini">
-          {showDaily && (
-            <span className={"acct-item " + cls(data.daily.remaining)}>日 {data.daily.remaining}%</span>
-          )}
-          {data.weekly && (
-            <span className={"acct-item " + cls(data.weekly.remaining)}>周 {data.weekly.remaining}%</span>
-          )}
-        </span>
-      </button>
+      {sources.map((src) => (
+        <button
+          key={src.id}
+          className="acct-head"
+          onClick={() => setOpen((o) => !o)}
+          title={`${src.name} 用量 · 点击查看详情`}
+        >
+          <Gauge size={13} />
+          <span className="acct-name">{src.name}</span>
+          {src.plan && <span className="acct-plan">{src.plan}</span>}
+          <span className="acct-mini">
+            {src.error ? (
+              <span className="acct-item red">!</span>
+            ) : (
+              <>
+                {(src.rows || []).slice(0, 2).map((r) => (
+                  <span key={r.id} className={"acct-item " + cls(r.remaining)}>
+                    {r.short} {r.remaining}%
+                  </span>
+                ))}
+                {!src.rows?.length && src.mini && <span className="acct-item">{src.mini}</span>}
+              </>
+            )}
+          </span>
+        </button>
+      ))}
       {open && (
         <div className="acct-panel">
-          {showDaily && (
-            <Bar label="日配额剩余" remaining={data.daily.remaining} resetAt={data.daily.resetAt} />
-          )}
-          {data.weekly && (
-            <Bar label="周配额剩余" remaining={data.weekly.remaining} resetAt={data.weekly.resetAt} />
-          )}
-          {data.overageMicros != null && data.overageMicros !== 0 && (
-            <div className="acct-line">
-              <span>超额余额</span>
-              <strong>{(data.overageMicros / 1e6).toFixed(2)}</strong>
-            </div>
-          )}
-          {data.promptCredits != null && data.promptCredits >= 0 && (
-            <div className="acct-line">
-              <span>剩余额度</span>
-              <strong>{data.promptCredits}</strong>
-            </div>
-          )}
-          {data.planEnd && (
-            <div className="acct-sub">
-              计费周期 {new Date(data.planStart).toLocaleDateString()} ~ {new Date(data.planEnd).toLocaleDateString()}
-            </div>
-          )}
+          {sources.map((src) => (
+            <SourceSection key={src.id} src={src} />
+          ))}
           <button className="acct-reload" onClick={load}>
             <RefreshCw size={11} /> 刷新
           </button>

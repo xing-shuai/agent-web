@@ -1923,7 +1923,7 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
 }
 
 /* ---- account quota card (sidebar footer) ---- */
-.acct-usage { border-top: 1px solid var(--border); padding: 6px 10px 2px; }
+.acct-usage { border-top: 1px solid var(--border); padding: 6px 10px 2px; display: flex; flex-direction: column; gap: 1px; }
 .acct-head {
   display: flex; align-items: center; gap: 6px; width: 100%;
   background: none; border: none; color: var(--text-dim);
@@ -1931,7 +1931,18 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
   border-radius: var(--radius);
 }
 .acct-head:hover { color: var(--text); background: var(--bg-hover); }
-.acct-plan { font-weight: 600; color: var(--text); }
+.acct-name { font-weight: 600; color: var(--text); }
+.acct-plan {
+  font-size: 9.5px; font-weight: 600; color: var(--text-faint);
+  border: 1px solid var(--border); border-radius: 3px; padding: 0 3px;
+  text-transform: uppercase; letter-spacing: 0.3px;
+}
+.acct-src { padding: 4px 0 2px; }
+.acct-src + .acct-src { border-top: 1px dashed var(--border); margin-top: 4px; }
+.acct-src-title { display: flex; align-items: baseline; gap: 6px; font-size: 11.5px; font-weight: 600; color: var(--text); margin-bottom: 5px; }
+.acct-src-plan { font-style: normal; font-weight: 500; color: var(--accent); font-size: 10.5px; }
+.acct-src-mail { font-style: normal; font-weight: 400; color: var(--text-faint); font-size: 10px; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-err { font-size: 11px; color: var(--red); word-break: break-all; }
 .acct-low { margin-left: auto; font-weight: 700; }
 .acct-low.red { color: var(--red); }
 .acct-low.amber { color: var(--amber); }
