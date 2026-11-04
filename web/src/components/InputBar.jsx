@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ImagePlus, ArrowUp, Square, X, Slash, FileText, Paperclip } from "lucide-react";
 import api from "../api.js";
+import { getUi } from "../ui.js";
 
 // Touch devices have no Shift key — Enter inserts a newline there and
 // sending is done via the send button only.
@@ -31,6 +32,13 @@ const cmdCategory = (name) => {
 
 export default function InputBar({ running, disabled, onSend, onCancel, controls, meter, commands = [], sessionId, inject, cwd, agentName = "Devin" }) {
   const [text, setText] = useState("");
+  // Re-render when UI prefs change so the hint reflects the send-key mode.
+  const [, setUiTick] = useState(0);
+  useEffect(() => {
+    const h = () => setUiTick((t) => t + 1);
+    window.addEventListener("dw-ui", h);
+    return () => window.removeEventListener("dw-ui", h);
+  }, []);
   const [images, setImages] = useState([]); // {data, mimeType, preview}
   const [files, setFiles] = useState([]); // {name, data, mimeType} pasted/picked non-image files
   const [slashIdx, setSlashIdx] = useState(0);
@@ -311,9 +319,13 @@ export default function InputBar({ running, disabled, onSend, onCancel, controls
     }
     if (e.key === "ArrowUp" && walkHistory(-1, e.target)) return e.preventDefault();
     if (e.key === "ArrowDown" && walkHistory(1, e.target)) return e.preventDefault();
-    if (e.key === "Enter" && !e.shiftKey && !COARSE && !e.nativeEvent.isComposing) {
-      e.preventDefault();
-      send();
+    if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+      const wantSend =
+        getUi().send === "mod" ? (e.ctrlKey || e.metaKey) && !e.shiftKey : !e.shiftKey && !COARSE;
+      if (wantSend) {
+        e.preventDefault();
+        send();
+      }
     }
   };
 
@@ -456,7 +468,10 @@ export default function InputBar({ running, disabled, onSend, onCancel, controls
         </div>
       </div>
       <div className="input-hint">
-        Enter 发送 · Shift+Enter 换行 · ↑ 历史{commands.length ? " · / 命令" : ""}
+        {getUi().send === "mod"
+          ? "Ctrl+Enter 发送 · Enter 换行 · ↑ 历史"
+          : "Enter 发送 · Shift+Enter 换行 · ↑ 历史"}
+        {commands.length ? " · / 命令" : ""}
       </div>
     </div>
   );

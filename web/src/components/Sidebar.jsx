@@ -31,7 +31,7 @@ import {
 } from "lucide-react";
 import ContextMenu from "./ContextMenu.jsx";
 import ConfirmDialog from "./ConfirmDialog.jsx";
-import FullscreenButton from "./FullscreenButton.jsx";
+import SettingsMenu from "./SettingsMenu.jsx";
 import ThemeMenu from "./ThemeMenu.jsx";
 import AccountUsage from "./AccountUsage.jsx";
 
@@ -625,7 +625,7 @@ export default function Sidebar({
             {notifyEnabled ? <Bell size={15} /> : <BellOff size={15} />}
           </button>
         )}
-        <FullscreenButton />
+        <SettingsMenu />
         <ThemeMenu />
       </div>
 

@@ -566,7 +566,10 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
 .chat-state { display: flex; align-items: center; gap: 8px; }
 
 .transcript { flex: 1; overflow-y: auto; padding: 66px 0 150px; }
-.col { width: 100%; max-width: 62rem; margin-left: auto; margin-right: auto; padding-left: 24px; padding-right: 24px; }
+:root { --colw: 62rem; }
+[data-colw="narrow"] { --colw: 48rem; }
+[data-colw="wide"] { --colw: 80rem; }
+.col { width: 100%; max-width: var(--colw, 62rem); margin-left: auto; margin-right: auto; padding-left: 24px; padding-right: 24px; }
 
 .anim-in { animation: item-in 0.18s ease both; }
 
@@ -1383,6 +1386,36 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
   pointer-events: none; opacity: 0; transition: opacity var(--t);
 }
 .input-wrap:focus-within .input-hint, .input-wrap:hover .input-hint { opacity: 1; }
+[data-hint="pin"] .input-hint { opacity: 0.8; }
+
+/* ================= settings modal ================= */
+.set-modal { width: min(430px, 94vw); }
+.set-body { display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
+.set-label { font-size: 11px; font-weight: 600; color: var(--text-3); letter-spacing: 0.4px; margin: 12px 0 3px; }
+.set-label:first-child { margin-top: 0; }
+.set-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
+.set-name { flex: 1; min-width: 0; font-size: 13px; color: var(--text-2); display: flex; flex-direction: column; }
+.set-name em { font-style: normal; font-size: 11px; color: var(--text-3); margin-top: 1px; }
+.set-val { font-style: normal; font-family: var(--mono); font-size: 12px; color: var(--text-2); width: 38px; text-align: right; flex: none; }
+.set-range { flex: none; width: 128px; accent-color: var(--accent-strong); }
+.set-seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; flex: none; }
+.set-seg button { border-radius: 0; background: none; color: var(--text-3); font-size: 12px; padding: 5px 10px; }
+.set-seg button + button { border-left: 1px solid var(--border); }
+.set-seg button:hover { color: var(--text-2); filter: none; }
+.set-seg button.cur { background: var(--accent-soft); color: var(--accent); }
+.set-select {
+  flex: none; max-width: 220px; background: var(--bg-active); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  font: inherit; font-size: 12.5px; padding: 5px 8px;
+}
+.set-select option { background: var(--elevated); color: var(--text); }
+
+/* reduced-motion setting (mirrors the prefers-reduced-motion block below) */
+[data-motion="off"] *, [data-motion="off"] *::before, [data-motion="off"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+}
 
 /* ================= image lightbox ================= */
 .transcript img { cursor: zoom-in; }
