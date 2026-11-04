@@ -718,7 +718,7 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
             <div key={w.key} className="mn-tick">
               <button
                 className="mn-dot"
-                title={(w.it.text || "📷 图片").slice(0, 50)}
+                aria-label="跳转到该消息"
                 onClick={() =>
                   scrollRef.current
                     ?.querySelector(`[data-ik="${w.key}"]`)
