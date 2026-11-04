@@ -1885,12 +1885,11 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
 [data-view="timeline"] .col:has(.msg.user) .tl-time { top: 19px; }
 [data-view="timeline"] .msg.user { padding-top: 15px; }
 @media (max-width: 768px) {
-  /* No room for a left time column — keep the compact rail. Stamps only
-     render on minute changes; on mobile they become a centered divider
-     (messaging-app convention) and the row's node sits on the divider. */
+  /* No room for a rail — drop it entirely on mobile and keep only the
+     minute-change dividers (messaging-app convention). */
   [data-view="timeline"] .transcript .col { padding-left: max(12px, env(safe-area-inset-left)); }
-  [data-view="timeline"] .transcript .col::before { left: 11px; }
-  [data-view="timeline"] .transcript .col::after { left: 6px; }
+  [data-view="timeline"] .transcript .col::before,
+  [data-view="timeline"] .transcript .col::after { display: none; }
   [data-view="timeline"] .tl-time {
     position: static; display: flex; align-items: center; gap: 8px;
     width: auto; text-align: center; margin: 2px 0 10px;
@@ -1900,7 +1899,6 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
   [data-view="timeline"] .tl-time::after {
     content: ""; flex: 1; height: 1px; background: var(--border);
   }
-  [data-view="timeline"] .transcript .col:has(> .tl-time)::after { top: 4px; }
 }
 
 /* ---------- 纸张 paper: ruled notebook lines + left margin ---------- */
