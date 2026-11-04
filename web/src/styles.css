@@ -1885,20 +1885,17 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
 [data-view="timeline"] .col:has(.msg.user) .tl-time { top: 19px; }
 [data-view="timeline"] .msg.user { padding-top: 15px; }
 @media (max-width: 768px) {
-  /* No room for a left time column — keep the compact rail. The stamp
-     floats right: text wraps around it instead of overlapping; flex and
-     card siblings drop below it, so nothing is covered. */
+  /* No room for a left time column — keep the compact rail, and give
+     each stamp its own right-aligned strip above the row: uniform
+     position, never overlaps content. */
   [data-view="timeline"] .transcript .col { padding-left: max(12px, env(safe-area-inset-left)); }
   [data-view="timeline"] .transcript .col::before { left: 11px; }
   [data-view="timeline"] .transcript .col::after { left: 6px; }
   [data-view="timeline"] .tl-time {
-    position: static; float: right; width: auto;
-    margin: 0 0 2px 8px; line-height: 1.6;
+    position: static; display: block; width: auto; text-align: right;
+    margin: 0 0 1px; line-height: 1.4;
     font-size: calc(9px * var(--tfs,1));
   }
-  /* Flex/BFC siblings drop below the float on their own; these plain
-     block cards would overlap its corner — push them explicitly. */
-  [data-view="timeline"] .tl-time + :is(.toolgroup, .thought, .term-card, .plan, .code-card, .queue-list, .msg-imgs, .lock-notice) { margin-top: 14px; }
 }
 
 /* ---------- 纸张 paper: ruled notebook lines + left margin ---------- */
