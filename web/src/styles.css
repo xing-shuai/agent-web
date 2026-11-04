@@ -880,6 +880,9 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
 }
 .mn-copy:hover { color: var(--text); background: var(--bg-3); }
 @media (max-width: 768px) { .msg-nav { display: none; } }
+/* Timeline view already uses the left column for time + rail — the nav
+   would collide with it on narrower windows. */
+[data-view="timeline"] .msg-nav { display: none; }
 .msg.agent { color: var(--text); }
 .agent-body { font-size: calc(14px * var(--tfs,1)); line-height: 1.7; min-width: 0; }
 .agent-body > :first-child { margin-top: 0; }
@@ -1821,13 +1824,13 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
 /* ---------- 时间线 timeline: left rail + dots ---------- */
 /* Scoped to .transcript — bare .col also matches the composer/permission
    cols inside .dock, which dragged the rail into the input area. */
-[data-view="timeline"] .transcript .col { position: relative; }
+[data-view="timeline"] .transcript .col { position: relative; padding-left: 62px; }
 [data-view="timeline"] .transcript .col::before {
-  content: ""; position: absolute; left: 11px; top: -28px; bottom: -28px;
+  content: ""; position: absolute; left: 46px; top: -28px; bottom: -28px;
   width: 2px; background: var(--border);
 }
 [data-view="timeline"] .transcript .col::after {
-  content: ""; position: absolute; left: 6px; top: 14px;
+  content: ""; position: absolute; left: 41px; top: 14px;
   width: 10px; height: 10px; border-radius: 50%;
   background: var(--bg); border: 2px solid var(--border-strong);
 }
@@ -1837,11 +1840,22 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
 [data-view="timeline"] .transcript .col:has(.turn-head)::after { top: 30px; }
 [data-view="timeline"] .turn-head { padding-left: 14px; }
 [data-view="timeline"] .tl-time {
-  position: absolute; right: 0; top: 2px;
+  position: absolute; left: 0; top: 13px; width: 36px; text-align: right;
   font-size: calc(10px * var(--tfs,1)); font-family: var(--mono); color: var(--text-3);
 }
 [data-view="timeline"] .col:has(.turn-head) .tl-time { top: 29px; }
+[data-view="timeline"] .col:has(.msg.user) .tl-time { top: 19px; }
 [data-view="timeline"] .msg.user { padding-top: 15px; }
+@media (max-width: 768px) {
+  /* No room for a left time column — keep the compact rail and the
+     right-edge timestamps. */
+  [data-view="timeline"] .transcript .col { padding-left: max(12px, env(safe-area-inset-left)); }
+  [data-view="timeline"] .transcript .col::before { left: 11px; }
+  [data-view="timeline"] .transcript .col::after { left: 6px; }
+  [data-view="timeline"] .tl-time { left: auto; right: 0; top: 2px; width: auto; }
+  [data-view="timeline"] .col:has(.turn-head) .tl-time { top: 29px; }
+  [data-view="timeline"] .col:has(.msg.user) .tl-time { top: 2px; }
+}
 
 /* ---------- 纸张 paper: ruled notebook lines + left margin ---------- */
 [data-view="paper"] .transcript {
