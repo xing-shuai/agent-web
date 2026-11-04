@@ -508,6 +508,25 @@ export default function App() {
       history.replaceState(null, "", location.pathname + location.search);
   }, [activeId]);
 
+  // List refresh → backfill titles into open sessionData. A session opened
+  // before its title existed (e.g. pi: title lands on first prompt) would
+  // otherwise show its raw id in the header forever.
+  useEffect(() => {
+    if (!sessionList.length) return;
+    setSessionData((sd) => {
+      let changed = false;
+      const next = { ...sd };
+      for (const it of sessionList) {
+        const cur = next[it.sessionId];
+        if (cur && it.title && cur.title !== it.title) {
+          next[it.sessionId] = { ...cur, title: it.title };
+          changed = true;
+        }
+      }
+      return changed ? next : sd;
+    });
+  }, [sessionList]);
+
   const sendPrompt = useCallback(
     (blocks) => {
       if (!activeId) return;
