@@ -667,8 +667,9 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
         </div>
       )}
 
-      <PermissionPrompt pendingPermissions={session.pendingPermissions} onPermission={onPermission} agentName={agentName} />
-      <InputBar
+      <div className="dock">
+        <PermissionPrompt pendingPermissions={session.pendingPermissions} onPermission={onPermission} agentName={agentName} />
+        <InputBar
         running={session.running}
         disabled={!wsUp || !!session.lockError}
         onSend={onSend}
@@ -716,6 +717,7 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
           )
         }
       />
+      </div>
     </div>
   );
 }
