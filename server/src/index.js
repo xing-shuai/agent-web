@@ -516,9 +516,11 @@ wss.on("connection", (ws) => {
           // Backstop: if the attach attempt pends, don't leave the client on a
           // loading screen — send whatever the buffer holds so far. Skipped
           // when the mirror already rebuilt (it broadcast its own history) or
-          // the attach already resolved.
+          // the attach already resolved. For mirror-less agents (pi) an empty
+          // buffer must NOT be pushed — it folds to a blank transcript over
+          // real content; the attach-resolve broadcast covers the wait.
           setTimeout(() => {
-            if (!s.attached && s.mirrorMaxRow == null) sendReady();
+            if (!s.attached && s.mirrorMaxRow == null && s.events.length) sendReady();
           }, 4000);
           break;
         }

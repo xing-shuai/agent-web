@@ -1172,6 +1172,9 @@ export class SessionHub extends EventEmitter {
       for (let i = sessions.length - 1; i >= 0; i--)
         if (this._tombstones.has(sessions[i].sessionId)) sessions.splice(i, 1);
     }
+    // Sessions created via session/new aren't on the agent's disk yet (pi
+    // writes the file on first prompt) — re-add them before enrichment.
+    this.#mergeInjected(sessions);
     const activity = this.#activityProbe();
     const now = Date.now();
     for (const it of sessions) {
@@ -1216,12 +1219,30 @@ export class SessionHub extends EventEmitter {
   }
 
   listCacheRemove(sessionId) {
+    this._injected?.delete(sessionId);
     if (this._listCache?.data)
       this._listCache.data = this._listCache.data.filter((x) => x.sessionId !== sessionId);
   }
 
   listCacheAdd(item) {
+    // Track created-but-not-yet-listed sessions independently of the cache —
+    // a null/expired cache used to swallow the injection entirely, and fresh
+    // lists drop the row again until the agent writes the session file.
+    (this._injected ||= new Map()).set(item.sessionId, item);
     if (this._listCache?.data) this._listCache.data.unshift(item);
+  }
+
+  #mergeInjected(sessions) {
+    if (!this._injected?.size) return;
+    const have = new Set(sessions.map((x) => x.sessionId));
+    for (const [id, it] of [...this._injected]) {
+      // Stop patching once the agent lists it itself or the session is dead.
+      if (have.has(id) || !this.sessions.get(id)?.attached) {
+        this._injected.delete(id);
+        continue;
+      }
+      if (!this._tombstones?.has(id)) sessions.unshift(it);
+    }
   }
 
   /** Queue ONE list rebuild after deletes settle — a refresh already running

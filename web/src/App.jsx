@@ -391,7 +391,18 @@ export default function App() {
           },
         }));
         setActiveWorkspace(dir);
+        // New sessions must be subscribed here — openSession isn't involved,
+        // and updates broadcast only to s.subscribers: without this the fresh
+        // chat shows the optimistic bubble then goes silent.
+        const prev = activeRef.current.id;
+        if (prev && prev !== res.sessionId) {
+          subscribedRef.current.delete(prev);
+          wsClient.send({ type: "unsubscribe", sessionId: prev });
+        }
+        subscribedRef.current.set(res.sessionId, dir);
         setActiveId(res.sessionId);
+        location.hash = `#/session/${encodeURIComponent(res.sessionId)}`;
+        wsClient.send({ type: "subscribe", sessionId: res.sessionId, cwd: dir });
         refreshSessions();
       } catch (e) {
         setBanner(`创建会话失败: ${e.message}`);
