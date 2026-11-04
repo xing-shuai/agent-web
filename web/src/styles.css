@@ -1835,11 +1835,14 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
 /* Scoped to .transcript — bare .col also matches the composer/permission
    cols inside .dock, which dragged the rail into the input area. */
 [data-view="timeline"] .transcript .col { position: relative; padding-left: 62px; }
-[data-view="timeline"] .transcript .col::before {
+/* Rail + node only on real transcript items (they carry data-ik) —
+   placeholder cols (.empty-hint loading, .load-earlier) must not draw
+   a dangling line segment. */
+[data-view="timeline"] .transcript .col[data-ik]::before {
   content: ""; position: absolute; left: 46px; top: -28px; bottom: -28px;
   width: 2px; background: var(--border);
 }
-[data-view="timeline"] .transcript .col::after {
+[data-view="timeline"] .transcript .col[data-ik]::after {
   content: ""; position: absolute; left: 41px; top: 14px;
   width: 10px; height: 10px; border-radius: 50%;
   background: var(--bg); border: 2px solid var(--border-strong);
