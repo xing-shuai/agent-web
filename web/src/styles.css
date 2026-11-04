@@ -420,6 +420,7 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
   display: flex; align-items: center; gap: 8px;
   padding: 8px 6px 2px; border-top: 1px solid var(--border);
   font-size: 11.5px; color: var(--text-3);
+  position: relative;
 }
 .conn { width: 7px; height: 7px; border-radius: 50%; background: var(--red); flex: none; }
 
@@ -1944,18 +1945,19 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
 }
 
 /* ---- account quota popover (sidebar footer toolbar) ---- */
-.acct-pop { position: relative; }
 .acct-btn { width: auto; padding: 0 6px; gap: 3px; }
 .acct-lowest { font-family: var(--mono); font-size: 11px; font-weight: 600; }
 .acct-lowest.amber { color: var(--amber); }
 .acct-lowest.red { color: var(--red); }
+/* Anchored to .sb-foot (position:relative), not the trigger — the panel spans
+   the sidebar's exact width so it can never clip either window edge. */
 .acct-panel {
-  position: absolute; bottom: calc(100% + 8px); right: -4px; z-index: 60;
-  width: 240px; max-height: 62vh; overflow-y: auto;
+  position: absolute; bottom: calc(100% + 6px); left: 0; right: 0; z-index: 60;
+  max-height: 62vh; overflow-y: auto;
   background: var(--elevated); border: 1px solid var(--border);
   border-radius: var(--r-lg); box-shadow: var(--shadow-lg);
   padding: 6px 12px 8px;
-  animation: pop-in 0.12s ease both; transform-origin: bottom right;
+  animation: pop-in 0.12s ease both; transform-origin: bottom center;
 }
 .acct-src { padding: 4px 0 2px; }
 .acct-src + .acct-src { border-top: 1px dashed var(--border); margin-top: 4px; }

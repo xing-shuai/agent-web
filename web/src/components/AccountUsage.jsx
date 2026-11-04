@@ -67,9 +67,11 @@ function SourceSection({ src }) {
   );
 }
 
-/** Account quota: a single toolbar button (Gauge + lowest remaining %),
- *  opening a popover with per-source detail sections. 5 min refresh. */
-export default function AccountUsage() {
+/** Account quota: a single toolbar button showing the remaining quota of the
+ *  source matching the active session's agent/model provider (Devin plan for
+ *  devin sessions, the pi provider for pi sessions; global lowest otherwise).
+ *  Clicking opens a popover with every source's detail. 5 min refresh. */
+export default function AccountUsage({ agent, provider }) {
   const [data, setData] = useState(null);
   const [open, setOpen] = useState(false);
   const [err, setErr] = useState(null);
@@ -102,19 +104,36 @@ export default function AccountUsage() {
   const sources = data?.sources || [];
   if (err || sources.length === 0) return null;
 
-  const rems = sources.flatMap((s) => (s.rows || []).map((r) => r.remaining)).filter(Number.isFinite);
-  const lowest = rems.length ? Math.min(...rems) : null;
-  const lowCls = lowest != null ? cls(lowest) : "";
+  // Pick the source backing the active session; fall back to the global lowest.
+  let shown = null;
+  if (agent === "devin") shown = sources.find((s) => s.id === "devin") || null;
+  else if (agent === "pi") {
+    const want = provider?.includes("codex") ? "pi-codex" : provider?.includes("deepseek") ? "pi-deepseek" : null;
+    shown =
+      (want && sources.find((s) => s.id === want)) ||
+      sources.find((s) => s.agent === "pi" && s.rows?.length) ||
+      sources.find((s) => s.agent === "pi") ||
+      null;
+  }
+  const rowPool = shown ? shown.rows || [] : sources.flatMap((s) => s.rows || []);
+  const lowRow = rowPool.filter((r) => Number.isFinite(r.remaining)).sort((a, b) => a.remaining - b.remaining)[0];
+  const lowCls = lowRow ? cls(lowRow.remaining) : "";
 
   return (
     <div className="acct-pop" ref={ref}>
       <button
         className={"icon-ghost acct-btn" + (open ? " on" : "")}
-        title="账户用量"
+        title={`${shown?.name || "账户"}用量`}
         onClick={() => setOpen((o) => !o)}
       >
         <Gauge size={15} />
-        {lowest != null && <span className={"acct-lowest " + lowCls}>{lowest}%</span>}
+        {lowRow ? (
+          <span className={"acct-lowest " + lowCls}>
+            {lowRow.short} {lowRow.remaining}%
+          </span>
+        ) : (
+          shown?.mini && <span className="acct-lowest">{shown.mini}</span>
+        )}
       </button>
       {open && (
         <div className="acct-panel">

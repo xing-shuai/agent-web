@@ -126,6 +126,8 @@ export default function Sidebar({
   onArchiveSession,
   unreadIds,
   agentsById,
+  usageAgent,
+  usageProvider,
   agentPref,
   onPickAgent,
   creating,
@@ -613,7 +615,7 @@ export default function Sidebar({
       <div className="sb-foot">
         <span className={"conn" + (wsUp ? " up" : "")} />
         <span>{wsUp ? "已连接" : "连接断开"}</span>
-        <AccountUsage />
+        <AccountUsage agent={usageAgent} provider={usageProvider} />
         {onToggleNotify && (
           <button
             className={"icon-ghost" + (notifyEnabled ? " on" : "")}

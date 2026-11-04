@@ -889,6 +889,8 @@ export default function App() {
         onArchiveSession={archiveSession}
         unreadIds={unreadIds}
         agentsById={agentsById}
+        usageAgent={activeId ? sessionList.find((s) => s.sessionId === activeId)?.agent : null}
+        usageProvider={session?.configOptions?.find((c) => c.category === "model" || /model/i.test(c.id || ""))?.currentValue?.split("/")[0] || null}
         agentPref={agentPref}
         onPickAgent={pickAgent}
         creating={creating}
