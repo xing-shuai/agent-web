@@ -1384,6 +1384,21 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
 }
 .input-wrap:focus-within .input-hint, .input-wrap:hover .input-hint { opacity: 1; }
 
+/* ================= image lightbox ================= */
+.transcript img { cursor: zoom-in; }
+.imgview {
+  position: fixed; inset: 0; z-index: 200;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.82);
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  cursor: zoom-out; animation: fade-in 0.15s ease both;
+}
+.imgview img {
+  max-width: 94vw; max-height: 92vh; object-fit: contain;
+  border-radius: 8px; box-shadow: 0 12px 48px rgba(0, 0, 0, 0.55);
+  cursor: default;
+}
+
 /* ================= context menu ================= */
 .ctx-backdrop { position: fixed; inset: 0; z-index: 100; }
 .ctx-menu {

@@ -257,6 +257,17 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
   const stickRef = useRef(true);
   const lastTopRef = useRef(0);
   const [showJump, setShowJump] = useState(false);
+  // Image lightbox — transcript-level delegation catches every <img>
+  // (markdown bodies, user attachments, tool results) without per-item wiring.
+  const [imgView, setImgView] = useState(null);
+  useEffect(() => {
+    if (!imgView) return;
+    const esc = (e) => {
+      if (e.key === "Escape") setImgView(null);
+    };
+    window.addEventListener("keydown", esc);
+    return () => window.removeEventListener("keydown", esc);
+  }, [imgView]);
   // Per-session transcript generation — histories arrive consolidated (one
   // atomic fold), so a gen bump just means "pin to bottom after the swap",
   // not a streaming refill that needs covering.
@@ -507,7 +518,15 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
         </div>
       </header>
 
-      <div className="transcript" ref={scrollRef} onScroll={onScroll}>
+      <div
+        className="transcript"
+        ref={scrollRef}
+        onScroll={onScroll}
+        onClick={(e) => {
+          const img = e.target.closest?.("img");
+          if (img && !img.closest("a")) setImgView(img.src);
+        }}
+      >
         {searchOn && (
           <div className="ts-search">
             <Search size={13} />
@@ -718,6 +737,11 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
         }
       />
       </div>
+      {imgView && (
+        <div className="imgview" onClick={() => setImgView(null)}>
+          <img src={imgView} alt="" onClick={(e) => e.stopPropagation()} />
+        </div>
+      )}
     </div>
   );
 }
