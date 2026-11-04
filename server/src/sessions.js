@@ -1118,9 +1118,18 @@ export class SessionHub extends EventEmitter {
   }
 
   async listSessions(cwd) {
-    const params = cwd ? { cwd } : {};
-    const res = await this.acp.request("session/list", params);
-    const sessions = res.sessions || [];
+    // pi-acp filters an unscoped list by its last loaded/created session's
+    // cwd (`params.cwd ?? lastSessionCwd`) — an explicit "" defeats that and
+    // means "all". It also pages at 50, so follow nextCursor.
+    const params = cwd ? { cwd } : this.devinExt ? {} : { cwd: "" };
+    const sessions = [];
+    let cursor;
+    for (let page = 0; page < 40; page++) {
+      const res = await this.acp.request("session/list", cursor ? { ...params, cursor } : params);
+      sessions.push(...(res.sessions || []));
+      cursor = res.nextCursor;
+      if (!cursor) break;
+    }
     const activity = this.#activityProbe();
     const now = Date.now();
     for (const it of sessions) {
