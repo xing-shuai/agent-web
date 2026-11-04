@@ -850,13 +850,13 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
    hovering a tick floats a preview card, clicking scrolls to the message. */
 .msg-nav {
   position: absolute; right: 13px; top: 50%; transform: translateY(-50%);
-  z-index: 6; display: flex; flex-direction: column; gap: 3px;
+  z-index: 6; display: flex; flex-direction: column; gap: 2px;
 }
 .mn-tick { position: relative; display: flex; align-items: center; justify-content: flex-end; }
-/* The button is a 21×13 hit box; the visible 3px bar is its ::before,
-   animated with GPU-friendly scaleX instead of layout-changing width. */
+/* The button is a 21×8 hit box (10px pitch, same as before); the visible
+   3px bar is its ::before, animated with scaleX instead of width. */
 .mn-dot {
-  width: 21px; height: 13px; border: 0; background: none; padding: 0;
+  width: 21px; height: 8px; border: 0; background: none; padding: 0;
   cursor: pointer; position: relative;
 }
 .mn-dot::before {
