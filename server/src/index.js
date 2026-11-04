@@ -4,6 +4,7 @@ import http from "node:http";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { AcpClient } from "./acp-client.js";
 import { SessionHub } from "./sessions.js";
@@ -794,6 +795,20 @@ setInterval(() => {
 
 server.listen(PORT, HOST, () => {
   console.log(`devin-web server listening on http://${HOST}:${PORT}`);
+  // pi-ask is installed by pi's own package manager — an upgrade silently
+  // wipes our ask_user patch. Re-apply on every boot; the script is
+  // idempotent, so this is a cheap marker check when already patched.
+  if (hubs.has("pi")) {
+    execFile(
+      process.execPath,
+      [path.join(ROOT, "server", "scripts", "patch-pi-ask.mjs")],
+      (e, stdout, stderr) => {
+        const out = `${stdout}${stderr}`.trim();
+        if (out) console.log(`[patch-pi-ask] ${out}`);
+        if (e) console.warn(`[patch-pi-ask] FAILED — pi ask_user unavailable until repatched: ${e.message}`);
+      }
+    );
+  }
   // Warm each agent (spawn + first list) so the first /api/sessions isn't
   // stuck behind pi-acp's cold start. Cache fills in the background.
   for (const h of hubs.values()) h.listSessions(undefined, { fresh: true }).catch(() => {});

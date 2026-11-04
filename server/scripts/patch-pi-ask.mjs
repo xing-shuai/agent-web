@@ -149,12 +149,21 @@ async function runRpcAskFlow(
 			if (t) customTexts.push(t);
 		}
 
+		// Upstream contract (serializeAnswer): custom text goes into labels/
+		// values as well — formatAnswerLine only renders labels, so a
+		// customText-only field is invisible to the model's summary.
 		const customText = customTexts.join("；") || undefined;
 		if (picked.length || customText !== undefined || !q.required) {
 			answers[q.id] = {
 				indices: picked,
-				labels: picked.map((i) => labels[i]),
-				values: picked.map((i) => opts[i]?.value ?? labels[i]),
+				labels: [
+					...picked.map((i) => labels[i]),
+					...(customText ? [customText] : []),
+				],
+				values: [
+					...picked.map((i) => opts[i]?.value ?? labels[i]),
+					...(customText ? [customText] : []),
+				],
 				...(customText !== undefined ? { customText } : {}),
 			};
 		}

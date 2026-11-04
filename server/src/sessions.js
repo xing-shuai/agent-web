@@ -580,6 +580,7 @@ export class SessionHub extends EventEmitter {
           for (const o of this.sessions.values()) {
             if (o !== s && o.attached) {
               o.attached = false;
+              this.#releaseTurn(o);
               this.#broadcast(o.id, { type: "session_detached", sessionId: o.id }, { global: true });
               this.#broadcast(o.id, { type: "session_state", sessionId: o.id, state: "free" }, { global: true });
             }
@@ -1384,6 +1385,19 @@ export class SessionHub extends EventEmitter {
     this.#broadcast(s.id, { type: "queue_update", sessionId: s.id, queue: this.#queueView(s) }, { global: true });
   }
 
+  /** A session whose proc died can't still be running a turn — clear the
+      in-flight flag and cancel unanswered cards, or the queue parks forever
+      behind a ghost and the busy-guard blocks every reattach. */
+  #releaseTurn(s) {
+    s.prompting = 0;
+    for (const p of s.pendingPermissions.values())
+      this.#broadcast(s.id, { type: "permission_resolved", sessionId: s.id, requestId: p.requestId, cancelled: true }, { global: true });
+    s.pendingPermissions.clear();
+    for (const e of s.pendingElicitations.values())
+      this.#broadcast(s.id, { type: "elicitation_resolved", sessionId: s.id, requestId: e.requestId, cancelled: true }, { global: true });
+    s.pendingElicitations.clear();
+  }
+
   /** Send the head of the queue once the session goes idle. */
   #drainQueue(s) {
     const next = s.queue.shift();
@@ -1462,6 +1476,7 @@ export class SessionHub extends EventEmitter {
       if (s.attached && /unknown session|no such session|not found/i.test(String(e?.message))) {
         s.attached = false;
         s.attachWanted = true;
+        this.#releaseTurn(s);
         this.#broadcast(sessionId, { type: "session_detached", sessionId }, { global: true });
       }
       // The prompt never ran — pull the optimistic entry back out so it
@@ -1710,8 +1725,7 @@ export class SessionHub extends EventEmitter {
     }
     s.attached = false;
     s.attachWanted = false; // explicit release — hand it to whoever wants it
-    s.pendingPermissions.clear();
-    s.pendingElicitations.clear();
+    this.#releaseTurn(s);
     this.#broadcast(sessionId, { type: "session_detached", sessionId }, { global: true });
     this.#broadcast(sessionId, { type: "session_state", sessionId, state: "free" }, { global: true });
     return { closed: true };
