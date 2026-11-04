@@ -597,19 +597,25 @@ export default function App() {
   );
 
   // "编辑" = remove the queued prompt and pull its text back into the
-  // composer — the user edits then sends normally.
+  // composer — the user edits then sends normally. The inject is tagged
+  // with the session it came from and cleared on switch, so it can never
+  // leak into another session's composer.
   const [composerInject, setComposerInject] = useState(null);
   const injectComposer = useCallback((text) => {
-    setComposerInject({ text: text || "", n: Date.now() });
+    const sid = activeRef.current?.id || null;
+    setComposerInject({ text: text || "", n: Date.now(), sessionId: sid });
+    if (sid) try { localStorage.setItem(`devin-web.draft.${sid}`, text || ""); } catch {}
   }, []);
   const editQueuedPrompt = useCallback(
     (q) => {
       if (!activeId || !q?.id) return;
       wsClient.send({ type: "queue_remove", sessionId: activeId, queueId: q.id });
-      setComposerInject({ text: q.text || "", n: Date.now() });
+      setComposerInject({ text: q.text || "", n: Date.now(), sessionId: activeId });
+      try { localStorage.setItem(`devin-web.draft.${activeId}`, q.text || ""); } catch {}
     },
     [activeId]
   );
+  useEffect(() => setComposerInject(null), [activeId]);
 
   const setConfig = useCallback(
     (configId, value) => {

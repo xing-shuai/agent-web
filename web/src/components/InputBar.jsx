@@ -69,8 +69,10 @@ export default function InputBar({ running, disabled, onSend, onCancel, controls
   }, [sessionId]);
 
   // External text injection (e.g. "edit" a queued prompt pulls it back here).
+  // Tagged with the session it came from — never fill another session's
+  // composer with a stale inject.
   useEffect(() => {
-    if (!inject?.n) return;
+    if (!inject?.n || inject.sessionId !== sessionId) return;
     setText(inject.text || "");
     setSlashClosed(true);
     taRef.current?.focus();
