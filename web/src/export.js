@@ -13,7 +13,7 @@ function toolBlock(it) {
   return body ? `${head}\n\n\`\`\`\n${body}\n\`\`\`` : head;
 }
 
-export function buildMarkdown(items, { title, sessionId, cwd } = {}) {
+export function buildMarkdown(items, { title, sessionId, cwd, agent } = {}) {
   const out = [`# ${title || sessionId || "session"}`, cwd ? `> ${cwd}` : "", ""];
   for (const it of items || []) {
     switch (it.kind) {
@@ -21,7 +21,7 @@ export function buildMarkdown(items, { title, sessionId, cwd } = {}) {
         out.push(`## 你\n\n${it.text}${it.images?.length ? `\n\n*(+${it.images.length} 张图片)*` : ""}`);
         break;
       case "agent":
-        out.push(`## Devin\n\n${it.text}`);
+        out.push(`## ${agent || "Devin"}\n\n${it.text}`);
         break;
       case "thought":
         out.push(`> **思考过程**\n>\n> ${it.text.replace(/\n/g, "\n> ")}`);

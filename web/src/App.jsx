@@ -33,6 +33,7 @@ export default function App() {
   );
   const [banner, setBanner] = useState(null);
   const [toast, setToast] = useState(null); // {text, kind}
+  const [creating, setCreating] = useState(null); // agent id while session/new in flight
   const [notifyEnabled, setNotifyEnabled] = useState(
     () => localStorage.getItem("devin-web.notify") === "1"
   );
@@ -102,6 +103,15 @@ export default function App() {
   }, []);
 
   const agentsById = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
+  const agentsByIdRef = useRef(agentsById);
+  useEffect(() => {
+    agentsByIdRef.current = agentsById;
+  }, [agentsById]);
+  // Display name for a session's agent (pre-multi-agent rows default devin).
+  const agentNameOf = (sid) =>
+    agentsByIdRef.current.get(
+      sessionListRef.current.find((x) => x.sessionId === sid)?.agent || "devin"
+    )?.name || "Devin";
   // The active session's agent (default devin for pre-multi-agent records).
   const activeAgent = sessionList.find((s) => s.sessionId === activeId)?.agent || "devin";
   const activeCaps = agentsById.get(activeAgent)?.caps || { fork: true, quota: true };
@@ -220,7 +230,7 @@ export default function App() {
       wsClient.on("permission_request", (m) => {
         // A tool call is waiting for a human decision — notify when hidden.
         fireNotify(
-          "Devin 等待权限确认",
+          `${agentNameOf(m.sessionId)} 等待权限确认`,
           sessionListRef.current.find((x) => x.sessionId === m.sessionId)?.title || m.sessionId,
           "devin-perm-" + m.requestId
         );
@@ -374,6 +384,7 @@ export default function App() {
     async (cwd, agent) => {
       const dir = cwd || activeWorkspace;
       if (!dir) return setPickerOpen(true);
+      setCreating(agent || agentPref || "devin");
       try {
         const res = await api.post("/api/sessions", {
           cwd: dir,
@@ -406,6 +417,8 @@ export default function App() {
         refreshSessions();
       } catch (e) {
         setBanner(`创建会话失败: ${e.message}`);
+      } finally {
+        setCreating(null);
       }
     },
     [activeWorkspace, agentPref, refreshSessions]
@@ -743,7 +756,7 @@ export default function App() {
         document.title = "● " + baseTitle;
         if ("Notification" in window && Notification.permission === "granted") {
           try {
-            new Notification("Devin 完成了任务", {
+            new Notification(`${agentNameOf(id)} 完成了任务`, {
               body: sessionList.find((x) => x.sessionId === id)?.title || s.title || id,
               tag: "devin-done-" + id,
             });
@@ -781,7 +794,10 @@ export default function App() {
             "application/json;charset=utf-8"
           );
         } else {
-          downloadText(`${safe}.md`, buildMarkdown(items, { title, sessionId: sid, cwd: meta.cwd }));
+          downloadText(
+            `${safe}.md`,
+            buildMarkdown(items, { title, sessionId: sid, cwd: meta.cwd, agent: agentNameOf(sid) })
+          );
         }
         setToast({ text: `已导出 ${fmt === "json" ? "JSON" : "Markdown"}`, kind: "ok" });
       } catch (e) {
@@ -873,6 +889,9 @@ export default function App() {
         onArchiveSession={archiveSession}
         unreadIds={unreadIds}
         agentsById={agentsById}
+        agentPref={agentPref}
+        onPickAgent={pickAgent}
+        creating={creating}
         notifyEnabled={notifyEnabled}
         onToggleNotify={toggleNotify}
       />
@@ -894,6 +913,7 @@ export default function App() {
               sessionId={activeId}
               session={session}
               wsUp={wsUp}
+              agentName={agentsById.get(activeAgent)?.name || "Devin"}
               home={home}
               onSend={sendPrompt}
               onCancel={cancelPrompt}
@@ -919,6 +939,7 @@ export default function App() {
             activeWorkspace={activeWorkspace}
             home={home}
             wsUp={wsUp}
+            creating={creating}
             agents={agents}
             agentPref={agentPref}
             onPickAgent={pickAgent}

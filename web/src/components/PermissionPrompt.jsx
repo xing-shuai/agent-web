@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { ShieldAlert, X } from "lucide-react";
 
-export default function PermissionPrompt({ pendingPermissions, onPermission }) {
+export default function PermissionPrompt({ pendingPermissions, onPermission, agentName = "Devin" }) {
   // Disable a card's buttons the moment it's answered — the resolved event
   // may take a beat, and a double click would answer the JSON-RPC twice.
   const [answered, setAnswered] = useState(() => new Set());
@@ -16,7 +16,7 @@ export default function PermissionPrompt({ pendingPermissions, onPermission }) {
         <div key={p.requestId} className="perm-card">
           <div className="perm-title">
             <ShieldAlert size={15} />
-            Devin 请求权限<strong>{p.toolCall?.title || p.toolCall?.toolCallId || "操作"}</strong>
+            {agentName} 请求权限<strong>{p.toolCall?.title || p.toolCall?.toolCallId || "操作"}</strong>
           </div>
           {p.toolCall?.rawInput != null && (
             <pre className="perm-input">

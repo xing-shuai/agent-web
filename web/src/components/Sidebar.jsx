@@ -25,6 +25,8 @@ import {
   Bell,
   BellOff,
   CheckSquare,
+  ChevronDown,
+  Loader2,
   X,
 } from "lucide-react";
 import ContextMenu from "./ContextMenu.jsx";
@@ -62,9 +64,9 @@ const parentDir = (p) => {
 
 const copy = (t) => navigator.clipboard?.writeText(t).catch(() => {});
 
-function sessionStatus(s) {
+function sessionStatus(s, agentName) {
   if (s.state === "working")
-    return { cls: "st-work", label: "工作中", title: "Devin 正在工作" };
+    return { cls: "st-work", label: "工作中", title: `${agentName} 正在工作` };
   if (s.state === "held") return { cls: "st-held", label: "挂起", title: "已连接，等待输入" };
   if (s.state === "locked-active")
     return {
@@ -124,6 +126,9 @@ export default function Sidebar({
   onArchiveSession,
   unreadIds,
   agentsById,
+  agentPref,
+  onPickAgent,
+  creating,
   notifyEnabled,
   onToggleNotify,
 }) {
@@ -369,9 +374,40 @@ export default function Sidebar({
         </button>
       </div>
 
-      <button className="new-session" onClick={() => onNewSession(activeWorkspace)}>
-        <Plus size={16} /> 新建会话
-      </button>
+      <div className="new-session-row">
+        <button
+          className="new-session"
+          disabled={!!creating}
+          onClick={() => onNewSession(activeWorkspace)}
+        >
+          {creating ? <Loader2 size={16} className="spin" /> : <Plus size={16} />}
+          {creating ? "创建中…" : "新建会话"}
+        </button>
+        {(agentsById?.size || 0) > 1 && (
+          <button
+            className="new-session-pick"
+            title="选择要新建的 Agent"
+            disabled={!!creating}
+            onClick={(e) =>
+              setMenu({
+                x: e.clientX,
+                y: e.clientY,
+                items: [...agentsById.values()].map((a) => ({
+                  label: `新建 ${a.name} 会话`,
+                  icon: Plus,
+                  onClick: () => {
+                    onPickAgent?.(a.id);
+                    onNewSession(activeWorkspace, a.id);
+                  },
+                })),
+              })
+            }
+          >
+            {agentsById.get(agentPref)?.name || "Devin"}
+            <ChevronDown size={13} />
+          </button>
+        )}
+      </div>
 
       <div className="sb-tools">
         <div className="sb-search">
@@ -471,7 +507,10 @@ export default function Sidebar({
             {!collapsed[g.cwd] && (
               <div className="ws-body">
                 {g.sessions.map((s) => {
-                  const st = sessionStatus(s);
+                  const st = sessionStatus(
+                    s,
+                    agentsById?.get(s.agent || "devin")?.name || s.agent || "Devin"
+                  );
                   return (
                     <div
                       key={s.sessionId}
@@ -506,9 +545,9 @@ export default function Sidebar({
                         ) : (
                           <div className="session-title">
                             {s.pinned && <Pin size={11} className="pin-ic" />}
-                            {s.agent && s.agent !== "devin" && (
+                            {(agentsById?.size || 0) > 1 && (
                               <span className="sb-agent-tag">
-                                {agentsById?.get(s.agent)?.name || s.agent}
+                                {agentsById?.get(s.agent || "devin")?.name || s.agent || "Devin"}
                               </span>
                             )}
                             {s.title || s.sessionId}

@@ -247,7 +247,7 @@ const Item = React.memo(function Item({ item, userIndex, onFork, forkBusy, onRes
   }
 });
 
-export default function ChatView({ sessionId, session, wsUp, home, onSend, onCancel, onDequeue, onEditQueued, composerInject, onEditPrompt, canFork = true, onFork, forkBusy, onConfig, onPermission, onRetry, onRetryPrompt, onRelease, onOpenDrawer, onExport }) {
+export default function ChatView({ sessionId, session, wsUp, home, onSend, onCancel, onDequeue, onEditQueued, composerInject, onEditPrompt, canFork = true, onFork, forkBusy, onConfig, onPermission, onRetry, onRetryPrompt, onRelease, onOpenDrawer, onExport, agentName = "Devin" }) {
   const scrollRef = useRef(null);
   const [view, setViewState] = useState(getView);
   const pickView = (v) => {
@@ -588,7 +588,7 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
                 <span className="turn-mark">
                   <Sparkles size={12} />
                 </span>
-                Devin
+                {agentName}
               </div>
             )}
             {w.it.kind === "filesTouched" ? (
@@ -629,7 +629,7 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
         {session.running && (
           <div className="running-hint col">
             <Loader2 size={14} className="spin" />
-            <span className="shimmer">Devin 正在工作</span>
+            <span className="shimmer">{agentName} 正在工作</span>
           </div>
         )}
         {!session.running && session.lastTurn && (
@@ -667,13 +667,14 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
         </div>
       )}
 
-      <PermissionPrompt pendingPermissions={session.pendingPermissions} onPermission={onPermission} />
+      <PermissionPrompt pendingPermissions={session.pendingPermissions} onPermission={onPermission} agentName={agentName} />
       <InputBar
         running={session.running}
         disabled={!wsUp || !!session.lockError}
         onSend={onSend}
         onCancel={onCancel}
         sessionId={sessionId}
+        agentName={agentName}
         inject={composerInject}
         cwd={session.cwd}
         commands={session.commands}

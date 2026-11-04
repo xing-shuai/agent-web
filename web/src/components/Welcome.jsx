@@ -29,7 +29,7 @@ const baseName = (p) => {
   return parts[parts.length - 1] || p || "";
 };
 
-export default function Welcome({ sessions, activeWorkspace, home, wsUp, agents, agentPref, onPickAgent, onNewSession, onPickWorkspace, onOpenDrawer }) {
+export default function Welcome({ sessions, activeWorkspace, home, wsUp, creating, agents, agentPref, onPickAgent, onNewSession, onPickWorkspace, onOpenDrawer }) {
   const recent = useMemo(() => {
     const m = new Map(); // cwd -> {count, latest}
     for (const s of sessions || []) {
@@ -80,8 +80,9 @@ export default function Welcome({ sessions, activeWorkspace, home, wsUp, agents,
       )}
       <div className="welcome-actions">
         {activeWorkspace && (
-          <button className="primary" onClick={() => onNewSession()}>
-            <Plus size={15} /> 在 {shortPath(activeWorkspace)} 中新建会话
+          <button className="primary" disabled={!!creating} onClick={() => onNewSession()}>
+            {creating ? <Loader2 size={15} className="spin" /> : <Plus size={15} />}
+            {creating ? "创建中…" : `在 ${shortPath(activeWorkspace)} 中新建会话`}
           </button>
         )}
         <button className="secondary" onClick={onPickWorkspace}>

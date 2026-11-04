@@ -29,7 +29,7 @@ const cmdCategory = (name) => {
   return "其他";
 };
 
-export default function InputBar({ running, disabled, onSend, onCancel, controls, meter, commands = [], sessionId, inject, cwd }) {
+export default function InputBar({ running, disabled, onSend, onCancel, controls, meter, commands = [], sessionId, inject, cwd, agentName = "Devin" }) {
   const [text, setText] = useState("");
   const [images, setImages] = useState([]); // {data, mimeType, preview}
   const [files, setFiles] = useState([]); // {name, data, mimeType} pasted/picked non-image files
@@ -395,7 +395,7 @@ export default function InputBar({ running, disabled, onSend, onCancel, controls
           ref={taRef}
           className="input-ta"
           rows={1}
-          placeholder={running ? "Devin 正在工作…（可直接发送排队）" : "给 Devin 发消息…"}
+          placeholder={running ? `${agentName} 正在工作…（可直接发送排队）` : `给 ${agentName} 发消息…`}
           value={text}
           disabled={disabled}
           onChange={(e) => {
