@@ -862,15 +862,13 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
 .mn-dot::before {
   content: ""; position: absolute; right: 0; top: 50%; margin-top: -1.5px;
   width: 100%; height: 3px; border-radius: 2px;
-  background: var(--text-3); opacity: .4;
-  transform: scaleX(.62); transform-origin: right center;
-  transition: transform .24s cubic-bezier(.2,.8,.25,1),
-              opacity .18s ease, background-color .18s ease;
+  background: var(--text-3);
+  opacity: calc(.4 + .6 * var(--s, 0));
+  transform: scaleX(calc(.62 + .38 * var(--s, 0))); transform-origin: right center;
+  transition: transform .12s ease-out, opacity .12s ease-out, background-color .18s ease;
   will-change: transform;
 }
-.mn-tick:hover .mn-dot::before {
-  transform: scaleX(1); opacity: 1; background: var(--accent-strong);
-}
+.mn-tick:hover .mn-dot::before { background: var(--accent-strong); }
 .mn-preview {
   position: absolute; right: calc(100% + 8px); top: 50%; width: 230px;
   transform: translate(8px, -50%) scale(.96); transform-origin: right center;

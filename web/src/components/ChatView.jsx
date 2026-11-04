@@ -504,6 +504,22 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
   const hiddenCount = Math.max(0, renderItems.length - shown);
   const visibleItems = hiddenCount ? renderItems.slice(-shown) : renderItems;
   const navMsgs = visibleItems.filter((w) => w.it.kind === "user");
+  const navRef = useRef(null);
+  // macOS Dock-style magnification: every tick's length is driven by a
+  // gaussian of its distance from the cursor, via the --s CSS var.
+  const navMove = (e) => {
+    const nav = navRef.current;
+    if (!nav) return;
+    for (const tick of nav.children) {
+      const r = tick.getBoundingClientRect();
+      const d = Math.abs(e.clientY - (r.top + r.height / 2));
+      tick.style.setProperty("--s", Math.exp(-((d / 20) ** 2)).toFixed(3));
+    }
+  };
+  const navReset = () => {
+    const nav = navRef.current;
+    if (nav) for (const tick of nav.children) tick.style.setProperty("--s", "0");
+  };
   const loadEarlier = () => {
     const el = scrollRef.current;
     // Anchor: distance from the bottom edge stays constant across the prepend.
@@ -713,7 +729,7 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
         </ImgSessionCtx.Provider>
       </div>
       {navMsgs.length > 1 && (
-        <nav className="msg-nav" aria-label="跳转到我的消息">
+        <nav className="msg-nav" aria-label="跳转到我的消息" ref={navRef} onMouseMove={navMove} onMouseLeave={navReset}>
           {navMsgs.map((w) => (
             <div key={w.key} className="mn-tick">
               <button
