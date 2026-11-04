@@ -92,13 +92,13 @@ public class MainActivity extends Activity {
         col.setBackgroundColor(SETUP_BG);
 
         TextView title = new TextView(this);
-        title.setText("Devin Web");
+        title.setText("Agent Web");
         title.setTextColor(Color.WHITE);
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 24);
         col.addView(title);
 
         TextView sub = new TextView(this);
-        sub.setText("服务器地址 (devin-web server)");
+        sub.setText("服务器地址 (Agent Web server)");
         sub.setTextColor(Color.LTGRAY);
         sub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         sub.setPadding(0, dp(24), 0, dp(8));

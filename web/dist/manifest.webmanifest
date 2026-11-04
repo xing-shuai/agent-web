@@ -1,6 +1,6 @@
 {
-  "name": "Devin Web",
-  "short_name": "Devin",
+  "name": "Agent Web",
+  "short_name": "AgentWeb",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

@@ -1650,8 +1650,13 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
 }
 .view-sel .ns-trigger:hover { background: var(--hover); color: var(--text); }
 /* The select panel defaults to opening upward (composer context) — in the
-   topbar it must drop down. */
+   topbar it must drop down. Desktop: the trigger sits at the chat-head's
+   right edge, so anchor the panel's right side — a left-anchored 240px+
+   panel overflows the viewport and shifts the whole page horizontally. */
 .view-sel .ns-panel { top: calc(100% + 6px); bottom: auto; }
+@media (min-width: 769px) {
+  .view-sel .ns-panel { left: auto; right: 0; }
+}
 @media (max-width: 720px) {
   .view-sel > svg { display: none; }
   .view-sel .ns-trigger { padding: 4px; }

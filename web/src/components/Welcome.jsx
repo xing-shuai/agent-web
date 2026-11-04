@@ -51,7 +51,7 @@ export default function Welcome({ sessions, activeWorkspace, home, wsUp, creatin
         <button className="icon-ghost" title="会话列表" onClick={onOpenDrawer}>
           <Menu size={18} />
         </button>
-        <span className="mobile-bar-title">Devin Web</span>
+        <span className="mobile-bar-title">Agent Web</span>
         <span className="mobile-bar-actions">
           <FullscreenButton size={17} />
           <button className="icon-ghost" title="新建会话" onClick={() => onNewSession()}>

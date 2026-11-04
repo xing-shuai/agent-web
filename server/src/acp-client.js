@@ -70,7 +70,7 @@ export class AcpClient extends EventEmitter {
           terminal: false,
           _meta: this.initMeta,
         },
-        clientInfo: { name: "devin-web", title: "Devin Web", version: "0.1.0" },
+        clientInfo: { name: "devin-web", title: "Agent Web", version: "0.1.0" },
       })
         .then((res) => {
           this.agentInfo = res;

@@ -367,7 +367,7 @@ export default function Sidebar({
           <span className="logo-mark">
             <Sparkles size={15} />
           </span>
-          Devin Web
+          Agent Web
         </span>
         <button className="icon-ghost" title="选择目录" onClick={onPickWorkspace}>
           <FolderPlus size={17} />

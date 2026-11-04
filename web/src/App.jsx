@@ -721,7 +721,7 @@ export default function App() {
   }, [sessionList]);
   const fireNotify = useCallback((title, body, tag) => {
     if (!notifyRef.current || !document.hidden) return;
-    document.title = "● Devin Web";
+    document.title = "● Agent Web";
     if ("Notification" in window && Notification.permission === "granted") {
       try {
         new Notification(title, { body, tag });
@@ -748,7 +748,7 @@ export default function App() {
   // is hidden: flash the title and (when granted) fire a system notification.
   const prevRunRef = useRef(new Map());
   useEffect(() => {
-    const baseTitle = "Devin Web";
+    const baseTitle = "Agent Web";
     for (const [id, s] of Object.entries(sessionData)) {
       const prev = prevRunRef.current.get(id);
       prevRunRef.current.set(id, !!s.running);
