@@ -37,11 +37,17 @@ function ElicitForm({ e, agentName, disabled, onDone }) {
     <div className="perm-card elic-card">
       <div className="perm-title">
         <HelpCircle size={15} />
-        {agentName} 提问<strong>{e.message || schema.title || "请回答"}</strong>
+        {agentName} 提问
       </div>
-      {schema.description && <div className="elic-desc">{schema.description}</div>}
+      <div className="elic-msg">{e.message || schema.title || "请回答"}</div>
+      {schema.description && schema.description !== e.message && <div className="elic-desc">{schema.description}</div>}
       {fields.map(([name, p]) => (
-        <Field key={name} name={name} p={p} value={values[name]} req={required.includes(name)} onChange={(v) => set(name, v)} disabled={disabled} />
+        <Field
+          key={name} name={name}
+          p={p.description && p.description === e.message ? { ...p, description: undefined } : p}
+          value={values[name]} req={required.includes(name)}
+          onChange={(v) => set(name, v)} disabled={disabled}
+        />
       ))}
       <div className="perm-actions">
         <button
