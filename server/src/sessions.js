@@ -243,6 +243,12 @@ export class SessionHub extends EventEmitter {
       this.#pollStates().catch(() => {}).finally(() => (this._statePolling = false));
     }, STATE_POLL_MS);
     this._stateTimer.unref();
+    // Coalesced list refresh: batch deletes resolve one by one but each
+    // fresh list costs a full dir walk on the agent — queue them into a
+    // single re-list instead of one per delete.
+    this._refreshing = false;
+    this._refreshQ = false;
+    this._refreshT = null;
     this._mirrorTimer = setInterval(() => {
       if (this._mirrorPolling) return;
       this._mirrorPolling = true;
@@ -308,7 +314,13 @@ export class SessionHub extends EventEmitter {
         this.imgCache.delete(s.id);
       }
     }
-    const list = await this.listSessions(undefined, { fresh: true });
+    // pi's list is a ~2.5s filesystem walk that queues on the same stdio
+    // pipe as session/load — don't grind it every 8s when nothing changed.
+    const cacheStale = !this._listCache || Date.now() - this._listCache.at > 30_000;
+    const list =
+      this.devinExt || cacheStale
+        ? await this.listSessions(undefined, { fresh: true })
+        : this._listCache.data;
     const next = new Map();
     for (const it of list) {
       next.set(it.sessionId, it.state);
@@ -1212,6 +1224,30 @@ export class SessionHub extends EventEmitter {
     if (this._listCache?.data) this._listCache.data.unshift(item);
   }
 
+  /** Queue ONE list rebuild after deletes settle — a refresh already running
+   *  when another delete lands is re-run so the last list is post-delete. */
+  #scheduleListRefresh() {
+    if (this._refreshing) {
+      this._refreshQ = true;
+      return;
+    }
+    if (this._refreshT) return;
+    this._refreshT = setTimeout(() => {
+      this._refreshT = null;
+      this._refreshing = true;
+      this.listCacheInvalidate();
+      this.listSessions(undefined, { fresh: true })
+        .catch(() => {})
+        .finally(() => {
+          this._refreshing = false;
+          if (this._refreshQ) {
+            this._refreshQ = false;
+            this.#scheduleListRefresh();
+          }
+        });
+    }, 3_000);
+  }
+
   /** Lightweight queue preview — goes in queue_update broadcasts + history. */
   #queueView(s) {
     return s.queue.map((q) => ({
@@ -1494,10 +1530,11 @@ export class SessionHub extends EventEmitter {
       // enough for the repopulate to finish before the id could resurface.
       (this._tombstones ||= new Map()).set(sessionId, Date.now() + 300_000);
       del.finally(() => {
-        this._tombstones?.set(sessionId, Date.now() + 5_000);
-        this.listCacheInvalidate();
-        // Repopulate in the background so the next /api/sessions stays fast.
-        this.listSessions(undefined, { fresh: true }).catch(() => {});
+        // Hold the tombstone until the coalesced refresh (which re-runs if
+        // more deletes land mid-refresh) has produced a post-delete list —
+        // a stale snapshot arriving after the expiry would resurrect the row.
+        this._tombstones?.set(sessionId, Date.now() + 20_000);
+        this.#scheduleListRefresh();
       });
     }
     this.listCacheRemove(sessionId);
