@@ -73,17 +73,29 @@ export default function SettingsMenu() {
               </div>
               <div className="set-body">
                 <div className="set-label">外观</div>
-                <Row name="界面缩放" desc="全局字体与布局大小">
+                <Row name="侧栏字号" desc="左侧会话列表与工作区文字">
                   <input
                     className="set-range"
                     type="range"
                     min={80}
                     max={130}
                     step={5}
-                    value={ui.scale}
-                    onChange={(e) => set({ scale: +e.target.value })}
+                    value={ui.sbfs}
+                    onChange={(e) => set({ sbfs: +e.target.value })}
                   />
-                  <em className="set-val">{ui.scale}%</em>
+                  <em className="set-val">{ui.sbfs}%</em>
+                </Row>
+                <Row name="对话字号" desc="聊天瀑布流与输入区文字">
+                  <input
+                    className="set-range"
+                    type="range"
+                    min={80}
+                    max={130}
+                    step={5}
+                    value={ui.tfs}
+                    onChange={(e) => set({ tfs: +e.target.value })}
+                  />
+                  <em className="set-val">{ui.tfs}%</em>
                 </Row>
                 <Row name="内容行宽" desc="对话内容的最大宽度">
                   <Seg
