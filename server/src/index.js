@@ -261,7 +261,9 @@ app.post("/api/sessions", async (req, res) => {
     // Workspaces are shared and owned by the primary hub — a non-primary
     // hub's own addWorkspace only writes its private state file.
     if (h !== hub) hub.addWorkspace(cwd);
-    h.listCacheInvalidate();
+    // pi injects the new row into its list cache (the session file doesn't
+    // exist yet); devin's list is cheap to rebuild.
+    if (h.devinExt) h.listCacheInvalidate();
     res.json(created);
   } catch (e) {
     res.status(502).json({ error: e.message });
@@ -282,7 +284,6 @@ app.post("/api/sessions/:id/rename", async (req, res) => {
     if (!title) return res.status(400).json({ error: "empty title" });
     const h = hubFor(req.params.id);
     await h.renameSession(req.params.id, title);
-    h.listCacheInvalidate();
     res.json({ ok: true });
   } catch (e) {
     res.status(502).json({ error: e.message });
@@ -293,7 +294,6 @@ app.post("/api/sessions/:id/archive", async (req, res) => {
   try {
     const h = hubFor(req.params.id);
     const r = await h.setArchived(req.params.id, !!req.body?.archived);
-    h.listCacheInvalidate();
     res.json(r);
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -304,7 +304,6 @@ app.post("/api/sessions/:id/pin", async (req, res) => {
   try {
     const h = hubFor(req.params.id);
     const r = await h.setPinned(req.params.id, !!req.body?.pinned);
-    h.listCacheInvalidate();
     res.json(r);
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -329,7 +328,6 @@ app.delete("/api/sessions/:id", async (req, res) => {
   try {
     const h = hubFor(req.params.id);
     await h.deleteSession(req.params.id);
-    h.listCacheInvalidate();
     res.json({ ok: true });
   } catch (e) {
     res.status(502).json({ error: e.message });

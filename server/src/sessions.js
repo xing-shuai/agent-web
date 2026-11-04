@@ -581,6 +581,20 @@ export class SessionHub extends EventEmitter {
     s.configOptions = res.configOptions;
     this.#setMeta(res.sessionId, { cwd, createdAt: new Date().toISOString() });
     this.addWorkspace(cwd);
+    // pi doesn't write the session file until the first prompt — a re-list
+    // would lose the just-created session, so inject it into the cache.
+    if (!this.devinExt) {
+      this.listCacheAdd({
+        sessionId: res.sessionId,
+        cwd,
+        title: null,
+        updatedAt: new Date().toISOString(),
+        agent: this.agent,
+        pinned: false,
+        archived: false,
+        state: "held",
+      });
+    }
     return { sessionId: res.sessionId, modes: res.modes, configOptions: res.configOptions };
   }
 
@@ -1172,6 +1186,23 @@ export class SessionHub extends EventEmitter {
     this._listCache = null;
   }
 
+  /** Patch/remove/add cached rows in place — local mutations (rename, pin,
+   *  archive, delete, create) become visible instantly without paying for
+   *  another full agent-side list (pi's walks ~90 session files, ~2.5s). */
+  listCachePatch(sessionId, patch) {
+    const it = this._listCache?.data?.find((x) => x.sessionId === sessionId);
+    if (it) Object.assign(it, patch);
+  }
+
+  listCacheRemove(sessionId) {
+    if (this._listCache?.data)
+      this._listCache.data = this._listCache.data.filter((x) => x.sessionId !== sessionId);
+  }
+
+  listCacheAdd(item) {
+    if (this._listCache?.data) this._listCache.data.unshift(item);
+  }
+
   /** Lightweight queue preview — goes in queue_update broadcasts + history. */
   #queueView(s) {
     return s.queue.map((q) => ({
@@ -1384,6 +1415,7 @@ export class SessionHub extends EventEmitter {
     if (!this.devinExt) {
       const s = this.sessions.get(sessionId);
       this.#setMeta(sessionId, { title, customTitle: title });
+      this.listCachePatch(sessionId, { title });
       if (s) s.title = title;
       this.#broadcast(
         sessionId,
@@ -1440,11 +1472,19 @@ export class SessionHub extends EventEmitter {
   }
 
   async deleteSession(sessionId) {
-    try {
-      await this.acp.request("session/delete", { sessionId });
-    } catch {
+    const del = this.acp.request("session/delete", { sessionId }).catch(() => {
       /* best-effort: still remove locally */
-    }
+    });
+    // pi-acp's delete does a full session-dir walk (~seconds) — don't hold
+    // the API on it; re-list once the store has actually settled instead.
+    if (this.devinExt) await del;
+    else
+      del.finally(() => {
+        this.listCacheInvalidate();
+        // Repopulate in the background so the next /api/sessions stays fast.
+        this.listSessions(undefined, { fresh: true }).catch(() => {});
+      });
+    this.listCacheRemove(sessionId);
     const s = this.sessions.get(sessionId);
     if (s) {
       this.#broadcast(sessionId, { type: "session_deleted", sessionId }, { global: true });
@@ -1457,6 +1497,7 @@ export class SessionHub extends EventEmitter {
   /** Archive/unarchive a session — hidden from the sidebar unless shown. */
   async setArchived(sessionId, archived) {
     this.#setMeta(sessionId, { archived: !!archived });
+    this.listCachePatch(sessionId, { archived: !!archived });
     const s = this.sessions.get(sessionId);
     if (s) s.archived = !!archived;
     this.#broadcast(null, { type: "sessions_changed" });
@@ -1466,6 +1507,7 @@ export class SessionHub extends EventEmitter {
   /** Pin/unpin a session in the sidebar (local meta only, no agent call). */
   async setPinned(sessionId, pinned) {
     this.#setMeta(sessionId, { pinned: !!pinned });
+    this.listCachePatch(sessionId, { pinned: !!pinned });
     const s = this.sessions.get(sessionId);
     if (s) s.pinned = !!pinned;
     // Re-list so every watcher gets the re-sorted sidebar.
