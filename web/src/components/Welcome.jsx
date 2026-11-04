@@ -1,7 +1,12 @@
 import React, { useMemo } from "react";
 import { Sparkles, Plus, FolderOpen, Folder, Loader2, Menu } from "lucide-react";
 import FullscreenButton from "./FullscreenButton.jsx";
-import { shortPath } from "../App.jsx";
+
+function shortPath(p) {
+  if (!p) return "";
+  const parts = p.split("/").filter(Boolean);
+  return parts.length > 2 ? `…/${parts.slice(-2).join("/")}` : p;
+}
 
 function relTime(iso) {
   if (!iso) return "";
@@ -84,7 +89,7 @@ export default function Welcome({ sessions, activeWorkspace, home, wsUp, onNewSe
                 <Folder size={17} className="ws-card-ic" />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div className="ws-card-name">{baseName(shortCwd(r.cwd, home)) || r.cwd}</div>
-                  <div className="ws-card-path">{shortCwd(r.cwd, home)}</div>
+                  <div className="ws-card-path">{shortPath(shortCwd(r.cwd, home))}</div>
                   <div className="ws-card-meta">
                     {r.count} 个会话{r.latest ? ` · ${relTime(r.latest)}` : ""}
                   </div>

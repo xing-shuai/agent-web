@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -14,17 +14,20 @@ import {
   Copy,
   Check,
   Menu,
-  Plus,
-  Bell,
-  BellOff,
   Download,
   Rows3,
   ArrowDown,
+  GitFork,
+  Pencil,
+  FileDiff,
+  Search,
+  ChevronUp,
+  ChevronDown,
+  X,
 } from "lucide-react";
 import ToolCall, { PlanBox, ToolGroup } from "./ToolCall.jsx";
 import PermissionPrompt from "./PermissionPrompt.jsx";
 import InputBar from "./InputBar.jsx";
-import FullscreenButton from "./FullscreenButton.jsx";
 import UsagePop from "./UsagePop.jsx";
 import ConfigMenu from "./ConfigMenu.jsx";
 import NiceSelect from "./NiceSelect.jsx";
@@ -145,11 +148,63 @@ const MemoToolGroup = React.memo(ToolGroup, (a, b) =>
   a.items.length === b.items.length && a.items.every((x, i) => x === b.items[i]));
 const MemoPlanBox = React.memo(PlanBox);
 
-const Item = React.memo(function Item({ item }) {
+/** Per-turn summary of files touched by edit/delete/move tool calls. */
+function FilesTouchedChip({ paths }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="files-touched">
+      <button className="ft-chip" onClick={() => setOpen((o) => !o)}>
+        <FileDiff size={13} />
+        本轮变更 {paths.length} 个文件
+        <ChevronRight size={12} className={"ft-chev" + (open ? " open" : "")} />
+      </button>
+      {open && (
+        <div className="ft-list">
+          {paths.map((p) => (
+            <div key={p} className="ft-path" title={p}>
+              {p}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const Item = React.memo(function Item({ item, userIndex, onFork, forkBusy, onResend, onEdit }) {
   switch (item.kind) {
     case "user":
       return (
         <div className="msg user">
+          {(onFork || onResend || onEdit) && item.text && (
+            <div className="msg-actions">
+              {onEdit && (
+                <button title="编辑后重新发送" onClick={() => onEdit(item.text)}>
+                  <Pencil size={12} />
+                </button>
+              )}
+              {onResend && (
+                <button title="原样重发" onClick={() => onResend(item.text)}>
+                  <RotateCw size={12} />
+                </button>
+              )}
+              <button
+                title="复制"
+                onClick={() => navigator.clipboard?.writeText(item.text).catch(() => {})}
+              >
+                <Copy size={12} />
+              </button>
+              {onFork && userIndex != null && (
+                <button
+                  title="从此消息分叉出新会话"
+                  disabled={forkBusy}
+                  onClick={() => onFork(userIndex)}
+                >
+                  <GitFork size={12} />
+                </button>
+              )}
+            </div>
+          )}
           {item.images?.length > 0 && (
             <div className="msg-imgs">
               {item.images.map((src, i) => (
@@ -192,7 +247,7 @@ const Item = React.memo(function Item({ item }) {
   }
 });
 
-export default function ChatView({ sessionId, session, wsUp, home, onSend, onCancel, onConfig, onPermission, onRetry, onRetryPrompt, onRelease, onOpenDrawer, onNewSession, notifyEnabled, onToggleNotify, onExport }) {
+export default function ChatView({ sessionId, session, wsUp, home, onSend, onCancel, onDequeue, onEditQueued, composerInject, onEditPrompt, onFork, forkBusy, onConfig, onPermission, onRetry, onRetryPrompt, onRelease, onOpenDrawer, onExport }) {
   const scrollRef = useRef(null);
   const [view, setViewState] = useState(getView);
   const pickView = (v) => {
@@ -211,6 +266,117 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
   const PAGE = 220;
   const [shown, setShown] = useState(PAGE);
   const anchorRef = useRef(null);
+
+  // Fold consecutive tool calls + the agent's thoughts between them into one
+  // collapsible group — otherwise every "思考过程" splits the run apart.
+  const renderItems = useMemo(() => {
+    const out = [];
+    const inRun = (k) => k === "tool" || k === "thought";
+    for (const it of session.items) {
+      const last = out[out.length - 1];
+      if (inRun(it.kind)) {
+        if (last?.kind === "toolgroup") last.items = [...last.items, it];
+        else if (last && inRun(last.kind))
+          out[out.length - 1] = { kind: "toolgroup", key: "tg-" + last.key, items: [last, it] };
+        else out.push(it);
+      } else out.push(it);
+    }
+    // A run with no tool calls (only thoughts) renders unwrapped.
+    const flat = out.flatMap((g) =>
+      g.kind === "toolgroup" && !g.items.some((i) => i.kind === "tool") ? g.items : [g]
+    );
+    // Per-turn changed-file summary: collect paths touched by edit-like tool
+    // calls and drop a `filesTouched` pseudo item before each user message.
+    const EDIT_KINDS = new Set(["edit", "move", "delete"]);
+    const withFiles = [];
+    let touched = new Set();
+    const collect = (t) => {
+      if (t.kind === "tool" && EDIT_KINDS.has(t.toolKind))
+        for (const l of t.locations || []) if (l.path) touched.add(l.path);
+    };
+    for (const it of flat) {
+      if (it.kind === "user" && touched.size) {
+        withFiles.push({ kind: "filesTouched", key: "ft-" + it.key, paths: [...touched] });
+        touched = new Set();
+      }
+      withFiles.push(it);
+      if (it.kind === "toolgroup") it.items.forEach(collect);
+      else collect(it);
+    }
+    if (touched.size)
+      withFiles.push({ kind: "filesTouched", key: "ft-end", paths: [...touched] });
+    const lastUser = withFiles.reduce(
+      (acc, it, i) => (it.kind === "user" ? i : acc),
+      -1
+    );
+    // Keep item refs untouched — flags ride a parallel wrapper so memoized
+    // Item components still hit when only marking changed.
+    let uIdx = -1;
+    return withFiles.map((it, i) => ({
+      it,
+      key: it.key,
+      turnStart:
+        it.kind !== "user" &&
+        it.kind !== "filesTouched" &&
+        (i === 0 || withFiles[i - 1].kind === "user"),
+      spot: i >= lastUser,
+      userIndex: it.kind === "user" ? ++uIdx : null,
+    }));
+  }, [session.items]);
+
+  // ---------- in-transcript search (Ctrl/Cmd+F) ----------
+  const [searchOn, setSearchOn] = useState(false);
+  const [searchQ, setSearchQ] = useState("");
+  const [hitNo, setHitNo] = useState(0);
+  const searchBoxRef = useRef(null);
+
+  useEffect(() => {
+    setSearchOn(false);
+    setSearchQ("");
+  }, [sessionId]);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        setSearchOn(true);
+        setTimeout(() => searchBoxRef.current?.focus(), 0);
+      } else if (e.key === "Escape" && searchOn) {
+        setSearchOn(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [searchOn]);
+
+  const hits = useMemo(() => {
+    const q = searchQ.trim().toLowerCase();
+    if (!q) return [];
+    const textOf = (it) => {
+      if (it.kind === "toolgroup") return it.items.map(textOf).join("\n");
+      return [it.text, it.title, it.toolName, ...(it.content || []).map((c) => c.text || "")]
+        .filter(Boolean)
+        .join("\n");
+    };
+    return renderItems
+      .filter((w) => w.it.kind !== "filesTouched" && textOf(w.it).toLowerCase().includes(q))
+      .map((w) => w.key);
+  }, [renderItems, searchQ]);
+
+  const jumpToHit = useCallback(
+    (n) => {
+      if (!hits.length) return;
+      const i = ((n % hits.length) + hits.length) % hits.length;
+      setHitNo(i);
+      if (renderItems.length > shown) setShown(renderItems.length);
+      setTimeout(() => {
+        scrollRef.current
+          ?.querySelector(`[data-ik="${hits[i]}"]`)
+          ?.scrollIntoView({ block: "center" });
+      }, 60);
+    },
+    [hits, shown, renderItems.length]
+  );
 
   useEffect(() => {
     setShown(PAGE);
@@ -282,38 +448,6 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
   const modeSel = selects.find((c) => c.id === "mode");
   const otherSels = selects.filter((c) => c !== modeSel);
 
-  // Fold consecutive tool calls + the agent's thoughts between them into one
-  // collapsible group — otherwise every "思考过程" splits the run apart.
-  const renderItems = useMemo(() => {
-    const out = [];
-    const inRun = (k) => k === "tool" || k === "thought";
-    for (const it of session.items) {
-      const last = out[out.length - 1];
-      if (inRun(it.kind)) {
-        if (last?.kind === "toolgroup") last.items = [...last.items, it];
-        else if (last && inRun(last.kind))
-          out[out.length - 1] = { kind: "toolgroup", key: "tg-" + last.key, items: [last, it] };
-        else out.push(it);
-      } else out.push(it);
-    }
-    // A run with no tool calls (only thoughts) renders unwrapped.
-    const flat = out.flatMap((g) =>
-      g.kind === "toolgroup" && !g.items.some((i) => i.kind === "tool") ? g.items : [g]
-    );
-    // Mark the first non-user item of each Devin turn for a header row, and
-    // flag every item belonging to the latest turn (the spotlight view dims
-    // all earlier turns).
-    const lastUser = flat.reduce((acc, it, i) => (it.kind === "user" ? i : acc), -1);
-    // Keep item refs untouched — flags ride a parallel wrapper so memoized
-    // Item components still hit when only marking changed.
-    return flat.map((it, i) => ({
-      it,
-      key: it.key,
-      turnStart: it.kind !== "user" && (i === 0 || flat[i - 1].kind === "user"),
-      spot: i >= lastUser,
-    }));
-  }, [session.items]);
-
   const hiddenCount = Math.max(0, renderItems.length - shown);
   const visibleItems = hiddenCount ? renderItems.slice(-shown) : renderItems;
   const loadEarlier = () => {
@@ -365,46 +499,90 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
               <span className="pill-txt">未连接</span>
             </span>
           )}
-          {onToggleNotify && (
-            <button
-              className={"icon-ghost" + (notifyEnabled ? " on" : "")}
-              title={notifyEnabled ? "关闭完成通知" : "任务完成时通知我"}
-              onClick={onToggleNotify}
-            >
-              {notifyEnabled ? <Bell size={15} /> : <BellOff size={15} />}
-            </button>
-          )}
           {onExport && (
             <button className="icon-ghost" title="导出为 Markdown" onClick={onExport}>
               <Download size={15} />
             </button>
           )}
-          <span className="chat-mobile-actions">
-            <FullscreenButton size={17} />
-            {onNewSession && (
-              <button className="icon-ghost" title="新建会话" onClick={() => onNewSession()}>
-                <Plus size={18} />
-              </button>
-            )}
-          </span>
         </div>
       </header>
 
       <div className="transcript" ref={scrollRef} onScroll={onScroll}>
+        {searchOn && (
+          <div className="ts-search">
+            <Search size={13} />
+            <input
+              ref={searchBoxRef}
+              placeholder="搜索对话内容…"
+              value={searchQ}
+              onChange={(e) => {
+                setSearchQ(e.target.value);
+                setHitNo(0);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  jumpToHit(hitNo + (e.shiftKey ? -1 : 1));
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  setSearchOn(false);
+                }
+              }}
+            />
+            <span className="ts-count">
+              {searchQ.trim() ? (hits.length ? `${Math.min(hitNo + 1, hits.length)}/${hits.length}` : "0/0") : ""}
+            </span>
+            <button onClick={() => jumpToHit(hitNo - 1)} title="上一个 (Shift+Enter)">
+              <ChevronUp size={14} />
+            </button>
+            <button onClick={() => jumpToHit(hitNo + 1)} title="下一个 (Enter)">
+              <ChevronDown size={14} />
+            </button>
+            <button onClick={() => setSearchOn(false)} title="关闭 (Esc)">
+              <X size={14} />
+            </button>
+          </div>
+        )}
+        {!session.items.length && !session.running && !session.lockError && session.attached && (
+          <div className="empty-hints">
+            <div className="eh-title">
+              <Sparkles size={14} /> 新会话已就绪
+            </div>
+            <div className="eh-chips">
+              {[
+                "概览这个项目，告诉我它是做什么的",
+                "解释代码库的整体架构",
+                "找一个可以改进的地方并修复",
+                "为核心模块补充单元测试",
+              ].map((t) => (
+                <button key={t} className="eh-chip" onClick={() => onSend([{ type: "text", text: t }])}>
+                  {t}
+                </button>
+              ))}
+            </div>
+            <div className="eh-tip">输入 / 查看全部命令 · @ 引用文件 · Ctrl+K 打开命令面板 · Ctrl+F 搜索对话</div>
+          </div>
+        )}
         <ImgSessionCtx.Provider value={sessionId}>
         {hiddenCount > 0 && (
           <button className="col load-earlier" onClick={loadEarlier}>
             加载更早消息（还有 {hiddenCount} 条）
           </button>
         )}
-        {session.items.length === 0 && (
+        {session.items.length === 0 && !session.attached && (
           <div className="empty-hint col">
             <MessageSquare size={30} />
-            {session.attached ? "会话已就绪，开始对话吧。" : "正在加载会话…"}
+            正在加载会话…
           </div>
         )}
         {visibleItems.map((w) => (
-          <div key={w.key} className={"col anim-in" + (w.spot ? " spot" : "")}>
+          <div
+            key={w.key}
+            data-ik={w.key}
+            className={
+              "col anim-in" + (w.spot ? " spot" : "") + (hits[hitNo] === w.key && searchQ.trim() ? " search-hit" : "")
+            }
+          >
             {w.turnStart && (
               <div className="turn-head">
                 <span className="turn-mark">
@@ -413,7 +591,18 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
                 Devin
               </div>
             )}
-            <Item item={w.it} />
+            {w.it.kind === "filesTouched" ? (
+              <FilesTouchedChip paths={w.it.paths} />
+            ) : (
+            <Item
+              item={w.it}
+              userIndex={w.userIndex}
+              onFork={session.attached && !session.lockError ? onFork : null}
+              forkBusy={forkBusy}
+              onResend={session.attached ? (t) => onSend([{ type: "text", text: t }]) : null}
+              onEdit={session.attached ? onEditPrompt : null}
+            />
+            )}
             {w.it.failed && w.it._blocks && (
               <button className="msg-retry" onClick={() => onRetryPrompt?.(w.it)}>
                 发送失败 · 点击重试
@@ -421,6 +610,22 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
             )}
           </div>
         ))}
+        {session.queue?.length > 0 && (
+          <div className="queue-list col">
+            {session.queue.map((q, i) => (
+              <div key={q.id} className="queue-chip">
+                <span className="qc-pos">{i + 1}</span>
+                <span className="qc-text">{q.text || (q.images ? `📷 ${q.images} 张图片` : "…")}</span>
+                <button className="qc-btn" title="撤回编辑" onClick={() => onEditQueued?.(q)}>
+                  编辑
+                </button>
+                <button className="qc-btn qc-x" title="从队列移除" onClick={() => onDequeue?.(q.id)}>
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         {session.running && (
           <div className="running-hint col">
             <Loader2 size={14} className="spin" />
@@ -469,6 +674,8 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
         onSend={onSend}
         onCancel={onCancel}
         sessionId={sessionId}
+        inject={composerInject}
+        cwd={session.cwd}
         commands={session.commands}
         controls={
           <>

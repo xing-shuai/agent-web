@@ -1,1 +1,7 @@
 node_modules/
+*.apk
+android/.gradle/
+android/app/build/
+android/build/
+android/local.properties
+wechat_*.png

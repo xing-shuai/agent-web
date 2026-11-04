@@ -42,8 +42,22 @@ export function buildMarkdown(items, { title, sessionId, cwd } = {}) {
   return out.join("\n\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";
 }
 
-export function downloadText(filename, text) {
-  const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
+export function buildJson(items, { title, sessionId, cwd } = {}) {
+  return JSON.stringify(
+    {
+      title: title || sessionId || "session",
+      sessionId: sessionId || null,
+      cwd: cwd || null,
+      exportedAt: new Date().toISOString(),
+      items: items || [],
+    },
+    null,
+    2
+  );
+}
+
+export function downloadText(filename, text, mime = "text/markdown;charset=utf-8") {
+  const blob = new Blob([text], { type: mime });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;

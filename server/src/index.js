@@ -31,6 +31,25 @@ app.use("/api", (req, res, next) => {
   res.status(401).json({ error: "unauthorized" });
 });
 
+// CSRF guard for mutating requests — without it, any page the user browses
+// could POST create/delete/prompt while no token is configured. Browsers
+// always send sec-fetch-site (or Origin) on writes; requests without either
+// come from non-browser clients (curl), which can't be CSRF'd anyway.
+app.use("/api", (req, res, next) => {
+  if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return next();
+  const site = req.get("sec-fetch-site");
+  if (site === "same-origin") return next();
+  if (site && site !== "none") return res.status(403).json({ error: "forbidden" });
+  const origin = req.get("origin");
+  if (origin) {
+    try {
+      if (new URL(origin).host === req.get("host")) return next();
+    } catch { /* malformed origin */ }
+    return res.status(403).json({ error: "forbidden origin" });
+  }
+  next();
+});
+
 const expandHome = (p) => (p === "~" || p?.startsWith("~/") ? path.join(os.homedir(), p.slice(1)) : p);
 
 app.get("/api/health", (_req, res) => res.json({ ok: true, ...hub.status() }));
@@ -106,6 +125,51 @@ app.get("/api/fs/browse", (req, res) => {
   }
 });
 
+// Fuzzy file search inside a workspace for @-mentions — shallow recursive
+// walk with the usual noise dirs skipped.
+app.get("/api/fs/search", (req, res) => {
+  try {
+    const root = path.resolve(expandHome(req.query.root || ""));
+    const q = String(req.query.q || "").toLowerCase();
+    const SKIP = new Set([
+      "node_modules", ".git", "dist", "build", ".next", "__pycache__",
+      ".venv", "venv", "target", ".cache", "coverage",
+    ]);
+    const out = [];
+    const walk = (dir, depth) => {
+      if (out.length >= 300 || depth > 6) return;
+      let entries;
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const e of entries) {
+        if (out.length >= 300) return;
+        if (e.name.startsWith(".") || SKIP.has(e.name)) continue;
+        const p = path.join(dir, e.name);
+        if (e.isDirectory()) {
+          walk(p, depth + 1);
+        } else {
+          const rel = path.relative(root, p);
+          if (!q || rel.toLowerCase().includes(q)) out.push({ path: p, rel, name: e.name });
+        }
+      }
+    };
+    walk(root, 0);
+    // Prefer shorter paths and substring-leftmost matches.
+    out.sort((a, b) =>
+      q
+        ? a.rel.toLowerCase().indexOf(q) - b.rel.toLowerCase().indexOf(q) ||
+          a.rel.length - b.rel.length
+        : a.rel.length - b.rel.length
+    );
+    res.json({ root, files: out.slice(0, 50) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 app.post("/api/fs/mkdir", (req, res) => {
   try {
     const dir = path.resolve(expandHome(req.body.path || ""));
@@ -165,6 +229,36 @@ app.post("/api/sessions/:id/rename", async (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     res.status(502).json({ error: e.message });
+  }
+});
+
+app.post("/api/sessions/:id/archive", async (req, res) => {
+  try {
+    res.json(await hub.setArchived(req.params.id, !!req.body?.archived));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post("/api/sessions/:id/pin", async (req, res) => {
+  try {
+    res.json(await hub.setPinned(req.params.id, !!req.body?.pinned));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Fork the session at a user prompt → returns the new session id.
+// stepIndex = the Nth user message (kind:"prompt" steps, in order).
+app.post("/api/sessions/:id/fork", async (req, res) => {
+  try {
+    const idx = Number(req.body?.stepIndex ?? -1);
+    if (!Number.isInteger(idx) || idx < 0)
+      return res.status(400).json({ error: "stepIndex required" });
+    const r = await hub.forkAtStep(req.params.id, req.body?.cwd, idx);
+    res.json(r);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
   }
 });
 
@@ -236,16 +330,15 @@ if (fs.existsSync(WEB_DIST)) {
 }
 
 const server = http.createServer(app);
-const isLoopback = (h) => h === "localhost" || h === "127.0.0.1" || h === "::1" || h?.endsWith(".localhost");
 const wss = new WebSocketServer({
   server,
   path: "/ws",
   verifyClient(info, done) {
     // Browsers always send Origin on WS upgrades — a hostile page on this
     // machine could otherwise drive prompts and permission responses here.
-    // Allow: same-origin (served app), loopback↔loopback (dev/proxy), or
-    // origins listed in DEVIN_WEB_ORIGINS. Non-browser clients send no
-    // Origin and still pass the token check below.
+    // Allow: same-origin (served app) or origins listed in DEVIN_WEB_ORIGINS
+    // (a different local port IS hostile — no loopback↔loopback blanket pass).
+    // Non-browser clients send no Origin and still pass the token check below.
     const origin = info.req.headers.origin;
     if (origin) {
       let ok = false;
@@ -253,7 +346,7 @@ const wss = new WebSocketServer({
         const o = new URL(origin);
         const host = new URL(`http://${info.req.headers.host}`);
         const extra = (process.env.DEVIN_WEB_ORIGINS || "").split(",").map((s) => s.trim()).filter(Boolean);
-        ok = o.host === host.host || extra.includes(origin) || (isLoopback(o.hostname) && isLoopback(host.hostname));
+        ok = o.host === host.host || extra.includes(origin);
       } catch { /* malformed origin */ }
       if (!ok) return done(false, 403, "forbidden origin");
     }
@@ -305,6 +398,7 @@ wss.on("connection", (ws) => {
                 configOptions: s.configOptions,
                 availableCommands: s.commands || hub.commandsByCwd.get(s.cwd),
                 usage: s.usage || hub.usageById.get(msg.sessionId),
+                queue: hub.queueView?.(msg.sessionId) ?? [],
               });
             }
             // Re-send unanswered permission cards — they're live JSON-RPC
@@ -365,6 +459,23 @@ wss.on("connection", (ws) => {
         case "cancel":
           await hub.cancel(msg.sessionId);
           break;
+        case "queue_remove":
+          reply({
+            type: "queue_result",
+            sessionId: msg.sessionId,
+            removed: !!hub.removeQueued(msg.sessionId, msg.queueId),
+          });
+          break;
+        case "queue_edit": {
+          const q = hub.removeQueued(msg.sessionId, msg.queueId);
+          if (q) {
+            const r = await hub.prompt(msg.sessionId, msg.cwd, msg.blocks || q.blocks);
+            reply({ type: "prompt_result", sessionId: msg.sessionId, ...r });
+          } else {
+            reply({ type: "queue_result", sessionId: msg.sessionId, removed: false });
+          }
+          break;
+        }
         case "permission_response":
           hub.permissionResponse(msg.requestId, msg.optionId, !!msg.cancelled);
           break;

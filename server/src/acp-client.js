@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 
+const REQUEST_TIMEOUT_MS = 60_000;
+
 /**
  * AcpClient manages a single `devin acp` subprocess and speaks
  * newline-delimited JSON-RPC 2.0 over its stdin/stdout.
@@ -48,8 +50,10 @@ export class AcpClient extends EventEmitter {
       proc.on("exit", (code, signal) => {
         const pendings = [...this.pending.values()];
         this.pending.clear();
-        for (const p of pendings)
+        for (const p of pendings) {
+          clearTimeout(p.timer);
           p.reject(new Error(`devin acp exited (code=${code} signal=${signal})`));
+        }
         this.proc = null;
         this.starting = null;
         this.agentInfo = null;
@@ -68,6 +72,10 @@ export class AcpClient extends EventEmitter {
           _meta: {
             "cognition.ai/chains": true,
             "cognition.ai/workspaceDirCommands": true,
+            // Unlock the revert/* RPC namespace (listSteps/forkFromStep —
+            // verified working). Only flags for RPCs we actually call.
+            "cognition.ai/revert": true,
+            "cognition.ai/revertByUserMessageId": true,
           },
         },
         clientInfo: { name: "devin-web", title: "Devin Web", version: "0.1.0" },
@@ -118,6 +126,7 @@ export class AcpClient extends EventEmitter {
       const p = this.pending.get(msg.id);
       if (p) {
         this.pending.delete(msg.id);
+        clearTimeout(p.timer);
         if (msg.error) {
           const e = new Error(msg.error.message || "JSON-RPC error");
           e.code = msg.error.code;
@@ -166,16 +175,32 @@ export class AcpClient extends EventEmitter {
     this.proc.stdin.write(JSON.stringify(obj) + "\n");
   }
 
-  /** Client→agent request. Auto-starts the process. */
-  async request(method, params = {}) {
+  /** Client→agent request. Auto-starts the process.
+   *  Every request gets a timeout — a wedged agent must not leave entries in
+   *  `pending` forever (callers' promises would hang, leaking memory and
+   *  state like a stuck `prompting` flag). session/prompt is exempt: a turn
+   *  legitimately runs for a long time. */
+  async request(method, params = {}, timeoutMs = undefined) {
     await this.ensureStarted();
+    if (timeoutMs === undefined)
+      timeoutMs = method === "session/prompt" ? 0 : REQUEST_TIMEOUT_MS;
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = timeoutMs
+        ? setTimeout(() => {
+            if (!this.pending.delete(id)) return;
+            const e = new Error(`${method} timed out`);
+            e.code = -32000;
+            e.data = { "cognition.ai/errorKind": "timeout" };
+            reject(e);
+          }, timeoutMs)
+        : null;
+      this.pending.set(id, { resolve, reject, timer });
       try {
         this.#send({ jsonrpc: "2.0", id, method, params });
       } catch (e) {
         this.pending.delete(id);
+        clearTimeout(timer);
         reject(e);
       }
     });

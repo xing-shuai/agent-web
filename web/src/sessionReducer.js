@@ -9,6 +9,7 @@ export function emptySession() {
     modes: null,
     commands: [],
     pendingPermissions: [],
+    queue: [], // prompts parked while a turn runs (server-side FIFO)
     running: false,
     attached: false,
     gen: -1,
@@ -77,6 +78,10 @@ export function applyUpdate(s, update) {
         if (!src) return s;
         const last = s.items[s.items.length - 1];
         if (last?.kind === "user") {
+          // The client's optimistic bubble already carries this image — the
+          // server-side optimistic echo (same data: URI) must not append a
+          // second copy. Also covers duplicate grafted rows from sqlite.
+          if (last.images?.includes(src)) return s;
           return {
             ...s,
             items: [...s.items.slice(0, -1), { ...last, images: [...(last.images || []), src] }],

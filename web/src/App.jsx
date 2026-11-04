@@ -4,10 +4,11 @@ import api, { wsClient } from "./api.js";
 import { emptySession, applyUpdate, foldEvents } from "./sessionReducer.js";
 import Sidebar from "./components/Sidebar.jsx";
 import WorkspacePicker from "./components/WorkspacePicker.jsx";
+import CommandPalette from "./components/CommandPalette.jsx";
 import ChatView from "./components/ChatView.jsx";
 import Welcome from "./components/Welcome.jsx";
 import ErrorBoundary from "./components/ErrorBoundary.jsx";
-import { buildMarkdown, downloadText } from "./export.js";
+import { buildMarkdown, buildJson, downloadText } from "./export.js";
 
 export default function App() {
   const [workspaces, setWorkspaces] = useState([]);
@@ -20,6 +21,7 @@ export default function App() {
   const [sessionData, setSessionData] = useState({}); // id -> session state
   const [pickerOpen, setPickerOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [wsUp, setWsUp] = useState(false);
   const [banner, setBanner] = useState(null);
   const [toast, setToast] = useState(null); // {text, kind}
@@ -133,6 +135,7 @@ export default function App() {
                       cached: m.usage._meta?.["cognition.ai/cachedReadTokens"],
                     }
                   : folded.usage),
+              queue: m.queue || sd[m.sessionId]?.queue || [],
               attached: m.attached,
               running: m.state === "working",
             },
@@ -180,6 +183,12 @@ export default function App() {
         });
       }),
       wsClient.on("permission_request", (m) => {
+        // A tool call is waiting for a human decision — notify when hidden.
+        fireNotify(
+          "Devin 等待权限确认",
+          sessionListRef.current.find((x) => x.sessionId === m.sessionId)?.title || m.sessionId,
+          "devin-perm-" + m.requestId
+        );
         setSessionData((sd) => {
           const s = sd[m.sessionId] || emptySession();
           if (s.pendingPermissions.some((p) => p.requestId === m.requestId)) return sd;
@@ -209,12 +218,21 @@ export default function App() {
         });
       }),
       wsClient.on("prompt_result", (m) => {
-        patchSession(m.sessionId, { running: false });
+        // A queued prompt still has a turn in flight — running stays true.
+        if (!m.queued) patchSession(m.sessionId, { running: false });
         refreshSessions();
+      }),
+      wsClient.on("queue_update", (m) => {
+        setSessionData((sd) => {
+          const s = sd[m.sessionId];
+          if (!s) return sd;
+          return { ...sd, [m.sessionId]: { ...s, queue: m.queue || [] } };
+        });
       }),
       wsClient.on("config_options", (m) => {
         patchSession(m.sessionId, { configOptions: m.configOptions || [] });
       }),
+      wsClient.on("sessions_changed", () => refreshSessions()),
       wsClient.on("session_attached", (m) =>
         patchSession(m.sessionId, { attached: true, lockError: null, lockCode: null })
       ),
@@ -348,6 +366,30 @@ export default function App() {
     if (cwd) setActiveWorkspace(cwd);
   }, []);
 
+  const pinSession = useCallback(
+    async (sid, pinned) => {
+      try {
+        await api.post(`/api/sessions/${sid}/pin`, { pinned });
+        await refreshSessions();
+      } catch (e) {
+        setBanner(`置顶失败: ${e.message}`);
+      }
+    },
+    [refreshSessions]
+  );
+
+  const archiveSession = useCallback(
+    async (sid, archived) => {
+      try {
+        await api.post(`/api/sessions/${sid}/archive`, { archived });
+        await refreshSessions();
+      } catch (e) {
+        setBanner(`归档失败: ${e.message}`);
+      }
+    },
+    [refreshSessions]
+  );
+
   const openSession = useCallback(
     (sess) => {
       const sid = sess.sessionId || sess;
@@ -411,8 +453,12 @@ export default function App() {
         .map((b) => `data:${b.mimeType};base64,${b.data}`);
       // Devin doesn't echo user_message_chunk live — render it optimistically.
       // If an echo does arrive, the reducer replaces the optimistic item.
+      // While a turn runs the prompt lands in the server queue instead —
+      // the queued chip (not a fake transcript entry) is its visible form.
       setSessionData((sd) => {
         const s = sd[activeId] || emptySession();
+        if (s.running)
+          return { ...sd, [activeId]: { ...s, running: true } };
         return {
           ...sd,
           [activeId]: {
@@ -456,6 +502,47 @@ export default function App() {
   const cancelPrompt = useCallback(() => {
     if (activeId) wsClient.send({ type: "cancel", sessionId: activeId });
   }, [activeId]);
+
+  const dequeuePrompt = useCallback((queueId) => {
+    if (activeId) wsClient.send({ type: "queue_remove", sessionId: activeId, queueId });
+  }, [activeId]);
+
+  // Fork the session at the Nth user message → opens the new fork session.
+  const [forkBusy, setForkBusy] = useState(false);
+  const forkSession = useCallback(
+    async (stepIndex) => {
+      if (!activeId || forkBusy) return;
+      setForkBusy(true);
+      try {
+        const r = await api.post(`/api/sessions/${activeId}/fork`, {
+          stepIndex,
+          cwd: activeWorkspace,
+        });
+        await refreshSessions();
+        if (r?.sessionId) location.hash = `#/session/${r.sessionId}`;
+      } catch (e) {
+        alert(`分叉失败: ${e.message}`);
+      } finally {
+        setForkBusy(false);
+      }
+    },
+    [activeId, activeWorkspace, forkBusy, refreshSessions]
+  );
+
+  // "编辑" = remove the queued prompt and pull its text back into the
+  // composer — the user edits then sends normally.
+  const [composerInject, setComposerInject] = useState(null);
+  const injectComposer = useCallback((text) => {
+    setComposerInject({ text: text || "", n: Date.now() });
+  }, []);
+  const editQueuedPrompt = useCallback(
+    (q) => {
+      if (!activeId || !q?.id) return;
+      wsClient.send({ type: "queue_remove", sessionId: activeId, queueId: q.id });
+      setComposerInject({ text: q.text || "", n: Date.now() });
+    },
+    [activeId]
+  );
 
   const setConfig = useCallback(
     (configId, value) => {
@@ -542,6 +629,25 @@ export default function App() {
   }, [toast, wsUp]);
 
   // ---------- turn-end notifications ----------
+  // Ref mirror so one-shot WS handlers (registered once) read the latest flag.
+  const notifyRef = useRef(false);
+  const sessionListRef = useRef([]);
+  useEffect(() => {
+    notifyRef.current = notifyEnabled;
+  }, [notifyEnabled]);
+  useEffect(() => {
+    sessionListRef.current = sessionList;
+  }, [sessionList]);
+  const fireNotify = useCallback((title, body, tag) => {
+    if (!notifyRef.current || !document.hidden) return;
+    document.title = "● Devin Web";
+    if ("Notification" in window && Notification.permission === "granted") {
+      try {
+        new Notification(title, { body, tag });
+      } catch { /* ignored */ }
+    }
+  }, []);
+
   const toggleNotify = useCallback(async () => {
     if (notifyEnabled) {
       localStorage.setItem("devin-web.notify", "0");
@@ -586,7 +692,7 @@ export default function App() {
 
   // ---------- export transcript ----------
   const exportSession = useCallback(
-    async (sid) => {
+    async (sid, fmt = "md") => {
       try {
         let items = sessionData[sid]?.items;
         let meta = sessionData[sid] || {};
@@ -594,14 +700,22 @@ export default function App() {
           const h = await api.get(`/api/sessions/${sid}/history`);
           items = foldEvents(h.events || []).items;
           if (!items.length) {
-            setToast({ text: "该会话没有可导出的内容（需先在 web 中打开过一次）", kind: "warn" });
+            setToast({ text: "该会话没有可导出的内容", kind: "warn" });
             return;
           }
         }
         const title = sessionList.find((x) => x.sessionId === sid)?.title || meta.title || sid;
-        const md = buildMarkdown(items, { title, sessionId: sid, cwd: meta.cwd });
-        downloadText(`${title.replace(/[\\/:*?"<>|]/g, "_")}.md`, md);
-        setToast({ text: "已导出 Markdown", kind: "ok" });
+        const safe = title.replace(/[\\/:*?"<>|]/g, "_");
+        if (fmt === "json") {
+          downloadText(
+            `${safe}.json`,
+            buildJson(items, { title, sessionId: sid, cwd: meta.cwd }),
+            "application/json;charset=utf-8"
+          );
+        } else {
+          downloadText(`${safe}.md`, buildMarkdown(items, { title, sessionId: sid, cwd: meta.cwd }));
+        }
+        setToast({ text: `已导出 ${fmt === "json" ? "JSON" : "Markdown"}`, kind: "ok" });
       } catch (e) {
         setBanner(`导出失败: ${e.message}`);
       }
@@ -626,6 +740,41 @@ export default function App() {
     setPickerOpen(true);
   }, []);
 
+  // ---------- command palette (Cmd/Ctrl+K) ----------
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const paletteActions = useMemo(
+    () => [
+      { id: "new", title: "新建会话", run: () => createSession() },
+      {
+        id: "focus",
+        title: "聚焦输入框",
+        run: () => document.querySelector(".input-ta")?.focus(),
+      },
+      ...(activeId
+        ? [
+            { id: "export", title: "导出当前会话 (Markdown)", run: () => exportSession(activeId) },
+            {
+              id: "notify",
+              title: notifyEnabled ? "关闭完成通知" : "开启完成通知",
+              run: () => toggleNotify(),
+            },
+          ]
+        : []),
+      { id: "drawer", title: "打开会话列表", run: () => setDrawerOpen(true) },
+    ],
+    [createSession, exportSession, activeId, notifyEnabled, toggleNotify]
+  );
+
   return (
     <div className="app">
       {drawerOpen && <div className="drawer-scrim" onClick={() => setDrawerOpen(false)} />}
@@ -644,7 +793,11 @@ export default function App() {
         onRenameSession={renameSession}
         onReleaseSession={releaseSession}
         onExportSession={exportSession}
+        onPinSession={pinSession}
+        onArchiveSession={archiveSession}
         unreadIds={unreadIds}
+        notifyEnabled={notifyEnabled}
+        onToggleNotify={toggleNotify}
       />
       {toast && <div className={"toast " + toast.kind}>{toast.text}</div>}
       <main className="main">
@@ -667,15 +820,18 @@ export default function App() {
               home={home}
               onSend={sendPrompt}
               onCancel={cancelPrompt}
+              onDequeue={dequeuePrompt}
+              onEditQueued={editQueuedPrompt}
+              composerInject={composerInject}
+              onEditPrompt={injectComposer}
+              onFork={forkSession}
+              forkBusy={forkBusy}
               onConfig={setConfig}
               onPermission={answerPermission}
               onRetry={retryAttach}
               onRetryPrompt={retryPrompt}
               onRelease={releaseSession}
               onOpenDrawer={() => setDrawerOpen(true)}
-              onNewSession={createSession}
-              notifyEnabled={notifyEnabled}
-              onToggleNotify={toggleNotify}
               onExport={() => exportSession(activeId)}
             />
           </ErrorBoundary>
@@ -698,12 +854,13 @@ export default function App() {
           onSelect={selectWorkspace}
         />
       )}
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        sessions={sessionList}
+        actions={paletteActions}
+        onOpenSession={openSession}
+      />
     </div>
   );
-}
-
-export function shortPath(p) {
-  if (!p) return "";
-  const parts = p.split("/").filter(Boolean);
-  return parts.length > 2 ? `…/${parts.slice(-2).join("/")}` : p;
 }

@@ -17,7 +17,13 @@ import {
   Trash2,
   ChevronsDownUp,
   ChevronsUpDown,
-
+  Pin,
+  PinOff,
+  Archive,
+  ArchiveRestore,
+  FileJson,
+  Bell,
+  BellOff,
 } from "lucide-react";
 import ContextMenu from "./ContextMenu.jsx";
 import ConfirmDialog from "./ConfirmDialog.jsx";
@@ -111,7 +117,11 @@ export default function Sidebar({
   onExportSession,
   onPickWorkspace,
   onFocusWorkspace,
+  onPinSession,
+  onArchiveSession,
   unreadIds,
+  notifyEnabled,
+  onToggleNotify,
 }) {
   const [collapsed, setCollapsed] = useState(() => {
     try {
@@ -157,16 +167,25 @@ export default function Sidebar({
       return n;
     });
 
+  const [showArchived, setShowArchived] = useState(
+    () => localStorage.getItem("devin-web.showArchived") === "1"
+  );
+  const archivedCount = useMemo(
+    () => sessions.reduce((n, s) => n + (s.archived ? 1 : 0), 0),
+    [sessions]
+  );
+
   const groups = useMemo(() => {
     const m = new Map();
     for (const s of sessions) {
+      if (s.archived && !showArchived) continue;
       const k = s.cwd || "";
       if (!m.has(k)) m.set(k, []);
       m.get(k).push(s);
     }
     const createdOf = (s) => s.createdAt || s._meta?.["cognition.ai/createdAt"] || "";
     const rank = { working: 0, "locked-active": 1, held: 2, locked: 3, free: 4 };
-    const sessCmp =
+    const baseCmp =
       sortBy === "name"
         ? (a, b) => (a.title || a.sessionId).localeCompare(b.title || b.sessionId)
         : sortBy === "created"
@@ -176,6 +195,8 @@ export default function Sidebar({
                 (rank[a.state] ?? 4) - (rank[b.state] ?? 4) ||
                 (b.updatedAt || "").localeCompare(a.updatedAt || "")
             : (a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || "");
+    // Pinned sessions always float to the top inside their workspace group.
+    const sessCmp = (a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || baseCmp(a, b);
     const groups = [...m.entries()].map(([cwd, list]) => {
       const sorted = list.sort(sessCmp);
       return {
@@ -224,9 +245,20 @@ export default function Sidebar({
             onOpenSession(s);
           },
         },
+        {
+          label: s.pinned ? "取消置顶" : "置顶会话",
+          icon: s.pinned ? PinOff : Pin,
+          onClick: () => onPinSession?.(s.sessionId, !s.pinned),
+        },
+        {
+          label: s.archived ? "取消归档" : "归档会话",
+          icon: s.archived ? ArchiveRestore : Archive,
+          onClick: () => onArchiveSession?.(s.sessionId, !s.archived),
+        },
         { label: "重命名", icon: Pencil, onClick: () => setRenaming(s.sessionId) },
         { label: "复制会话 ID", icon: Copy, onClick: () => copy(s.sessionId) },
         { label: "导出为 Markdown", icon: Download, onClick: () => onExportSession?.(s.sessionId) },
+        { label: "导出为 JSON", icon: FileJson, onClick: () => onExportSession?.(s.sessionId, "json") },
         ...(s.state === "held" || s.state === "working"
           ? [
               {
@@ -260,6 +292,17 @@ export default function Sidebar({
           onClick: () => toggle(g.cwd),
         },
         { label: "复制路径", icon: Copy, onClick: () => copy(g.cwd) },
+        { sep: true },
+        {
+          label: showArchived ? "隐藏已归档会话" : `显示已归档会话 (${archivedCount})`,
+          icon: showArchived ? Archive : ArchiveRestore,
+          onClick: () => {
+            setShowArchived((v) => {
+              localStorage.setItem("devin-web.showArchived", v ? "0" : "1");
+              return !v;
+            });
+          },
+        },
       ],
     });
   };
@@ -376,7 +419,10 @@ export default function Sidebar({
                             onCancel={() => setRenaming(null)}
                           />
                         ) : (
-                          <div className="session-title">{s.title || s.sessionId}</div>
+                          <div className="session-title">
+                            {s.pinned && <Pin size={11} className="pin-ic" />}
+                            {s.title || s.sessionId}
+                          </div>
                         )}
                         <span className="sr-time">{relTime(s.updatedAt)}</span>
                       </div>
@@ -413,6 +459,15 @@ export default function Sidebar({
       <div className="sb-foot">
         <span className={"conn" + (wsUp ? " up" : "")} />
         <span>{wsUp ? "已连接" : "连接断开"}</span>
+        {onToggleNotify && (
+          <button
+            className={"icon-ghost" + (notifyEnabled ? " on" : "")}
+            title={notifyEnabled ? "关闭完成通知" : "任务完成时通知我"}
+            onClick={onToggleNotify}
+          >
+            {notifyEnabled ? <Bell size={15} /> : <BellOff size={15} />}
+          </button>
+        )}
         <FullscreenButton />
         <ThemeMenu />
       </div>
