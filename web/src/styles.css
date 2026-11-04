@@ -846,13 +846,13 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
   box-shadow: var(--shadow-md);
 }
 .msg.user:active .msg-actions { opacity: 1; transform: translateY(0); }
-/* Codex-style gutter rail: one tick per user message along the left edge;
+/* Codex-style gutter rail: one tick per user message along the right edge;
    hovering a tick floats a preview card, clicking scrolls to the message. */
 .msg-nav {
-  position: absolute; left: 7px; top: 50%; transform: translateY(-50%);
+  position: absolute; right: 13px; top: 50%; transform: translateY(-50%);
   z-index: 6; display: flex; flex-direction: column; gap: 7px;
 }
-.mn-tick { position: relative; display: flex; align-items: center; }
+.mn-tick { position: relative; display: flex; align-items: center; justify-content: flex-end; }
 .mn-dot {
   width: 13px; height: 3px; border: 0; border-radius: 2px; padding: 0;
   background: var(--text-3); opacity: .35; cursor: pointer;
@@ -860,8 +860,8 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
 }
 .mn-tick:hover .mn-dot { width: 21px; opacity: 1; background: var(--accent-strong); }
 .mn-preview {
-  position: absolute; left: 28px; top: 50%; width: 230px;
-  transform: translate(-5px, -50%);
+  position: absolute; right: 26px; top: 50%; width: 230px;
+  transform: translate(5px, -50%);
   background: var(--elevated); border: 1px solid var(--border);
   border-radius: 10px; box-shadow: var(--shadow-md);
   padding: 10px 30px 10px 12px;
@@ -880,9 +880,6 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
 }
 .mn-copy:hover { color: var(--text); background: var(--bg-3); }
 @media (max-width: 768px) { .msg-nav { display: none; } }
-/* Timeline view already uses the left column for time + rail — the nav
-   would collide with it on narrower windows. */
-[data-view="timeline"] .msg-nav { display: none; }
 .msg.agent { color: var(--text); }
 .agent-body { font-size: calc(14px * var(--tfs,1)); line-height: 1.7; min-width: 0; }
 .agent-body > :first-child { margin-top: 0; }
