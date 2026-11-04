@@ -585,9 +585,20 @@ const wss = new WebSocketServer({
   },
 });
 
+// Hash of the currently-served bundle — read per connect so a redeployed
+// dist advertises itself without a server restart. Clients compare it to
+// their own <script> tag and reload when the build moved on.
+function currentBuild() {
+  try {
+    const html = fs.readFileSync(path.join(WEB_DIST, "index.html"), "utf8");
+    return html.match(/assets\/index-([^.]+)\.js/)?.[1] || null;
+  } catch { return null; }
+}
+
 wss.on("connection", (ws) => {
   ws.isAlive = true;
   ws.on("pong", () => (ws.isAlive = true));
+  ws.send(JSON.stringify({ type: "hello", build: currentBuild() }));
 
   ws.on("message", async (raw) => {
     let msg;

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, X } from "lucide-react";
+import { AlertCircle, RotateCw, X } from "lucide-react";
 import api, { wsClient } from "./api.js";
 import { emptySession, applyUpdate, foldEvents } from "./sessionReducer.js";
 import Sidebar from "./components/Sidebar.jsx";
@@ -135,6 +135,19 @@ export default function App() {
   useEffect(() => {
     wsClient.onStatus = setWsUp;
     const offs = [
+      // Server redeployed the frontend while we were running — reload to
+      // the new bundle. sessionStorage guards against a reload loop if a
+      // sticky cache keeps serving the old index.html.
+      wsClient.on("hello", (m) => {
+        if (!m.build) return;
+        const own = [...document.scripts]
+          .map((s) => s.src.match(/assets\/index-([^.]+)\.js/)?.[1])
+          .find(Boolean);
+        if (own && m.build !== own && sessionStorage.getItem("dw.reloaded") !== m.build) {
+          sessionStorage.setItem("dw.reloaded", m.build);
+          location.reload();
+        }
+      }),
       wsClient.on("history", (m) => {
         setSessionData((sd) => {
           const prev = sd[m.sessionId];
@@ -933,6 +946,9 @@ export default function App() {
           <div className="banner">
             <AlertCircle size={15} />
             <span className="banner-msg">{banner}</span>
+            <button className="icon-ghost" onClick={() => location.reload()} title="刷新页面">
+              <RotateCw size={14} />
+            </button>
             <button className="icon-ghost" onClick={() => setBanner(null)} title="关闭">
               <X size={14} />
             </button>
