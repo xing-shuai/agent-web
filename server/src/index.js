@@ -763,6 +763,23 @@ wss.on("connection", (ws) => {
   });
 });
 
+// Push the new build to ALREADY-connected clients — a phone WebView holds its
+// WS open and would never see a connect-time hello otherwise. index.html is
+// written last by vite, so watching it marks a finished build.
+let buildWatchTimer = null;
+try {
+  fs.watch(path.join(WEB_DIST, "index.html"), () => {
+    clearTimeout(buildWatchTimer);
+    buildWatchTimer = setTimeout(() => {
+      const build = currentBuild();
+      if (!build) return;
+      for (const ws of wss.clients) {
+        try { ws.send(JSON.stringify({ type: "hello", build })); } catch {}
+      }
+    }, 800);
+  });
+} catch {}
+
 setInterval(() => {
   for (const ws of wss.clients) {
     if (!ws.isAlive) {
