@@ -1489,9 +1489,12 @@ export class SessionHub extends EventEmitter {
     if (this.devinExt) await del;
     else {
       // Hide the row from every list until the agent-side delete has had
-      // time to land — a mid-flight poll would otherwise re-add it.
-      (this._tombstones ||= new Map()).set(sessionId, Date.now() + 60_000);
+      // time to land — a mid-flight poll would otherwise re-add it. 5min
+      // covers long batch deletes; once the RPC settles, a short grace is
+      // enough for the repopulate to finish before the id could resurface.
+      (this._tombstones ||= new Map()).set(sessionId, Date.now() + 300_000);
       del.finally(() => {
+        this._tombstones?.set(sessionId, Date.now() + 5_000);
         this.listCacheInvalidate();
         // Repopulate in the background so the next /api/sessions stays fast.
         this.listSessions(undefined, { fresh: true }).catch(() => {});

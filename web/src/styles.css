@@ -410,6 +410,30 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
   font-size: 11.5px; color: var(--text-3);
 }
 .conn { width: 7px; height: 7px; border-radius: 50%; background: var(--red); flex: none; }
+
+/* ---- batch select ---- */
+.sr-check {
+  width: 14px; height: 14px; margin: 0; flex: none;
+  accent-color: var(--accent-strong); cursor: pointer;
+}
+.ws-head .sr-check { margin-right: 2px; }
+.session-row.sel { background: var(--accent-soft); }
+.sel-bar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 6px; border-top: 1px solid var(--border);
+  font-size: 12px; color: var(--text-3);
+}
+.sel-n { min-width: 44px; }
+.sel-sp { flex: 1; }
+.sel-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 4px 9px; border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: none; color: var(--text-2); font-size: 12px; cursor: pointer;
+}
+.sel-btn:hover { background: var(--hover); color: var(--text); }
+.sel-btn.danger { border-color: var(--red); color: var(--red); }
+.sel-btn.danger:hover { background: var(--red); color: #fff; }
+.sel-btn:disabled { opacity: 0.4; cursor: default; pointer-events: none; }
 .conn.up { background: var(--green); }
 .conn:not(.up) { animation: st-pulse 1.2s infinite; }
 /* first action icon (bell / fullscreen / theme — whichever exists) starts

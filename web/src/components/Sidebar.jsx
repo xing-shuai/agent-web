@@ -24,6 +24,8 @@ import {
   FileJson,
   Bell,
   BellOff,
+  CheckSquare,
+  X,
 } from "lucide-react";
 import ContextMenu from "./ContextMenu.jsx";
 import ConfirmDialog from "./ConfirmDialog.jsx";
@@ -112,6 +114,7 @@ export default function Sidebar({
   onNewSession,
   onOpenSession,
   onDeleteSession,
+  onDeleteSessions,
   onRenameSession,
   onReleaseSession,
   onExportSession,
@@ -135,6 +138,9 @@ export default function Sidebar({
   const [query, setQuery] = useState("");
   const [renaming, setRenaming] = useState(null); // sessionId being renamed
   const [confirmDel, setConfirmDel] = useState(null); // session pending delete
+  const [selectMode, setSelectMode] = useState(false);
+  const [sel, setSel] = useState(() => new Set());
+  const [confirmBatch, setConfirmBatch] = useState(false);
   const [sortBy, setSortBy] = useState(() => localStorage.getItem("devin-web.sort") || "recent");
   const [width, setWidth] = useState(() => {
     const w = +localStorage.getItem("devin-web.sbWidth") || 280;
@@ -167,6 +173,38 @@ export default function Sidebar({
       localStorage.setItem("devin-web.collapsed", JSON.stringify(n));
       return n;
     });
+
+  // Prune selections whose rows disappeared (deleted elsewhere / filtered).
+  useEffect(() => {
+    setSel((prev) => {
+      const live = new Set(sessions.map((s) => s.sessionId));
+      let changed = false;
+      const next = new Set();
+      for (const id of prev) {
+        if (live.has(id)) next.add(id);
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [sessions]);
+
+  const toggleSel = (id) =>
+    setSel((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+
+  const enterSelect = (id) => {
+    setSelectMode(true);
+    if (id) setSel(new Set([id]));
+  };
+
+  const exitSelect = () => {
+    setSelectMode(false);
+    setSel(new Set());
+    setConfirmBatch(false);
+  };
 
   const [showArchived, setShowArchived] = useState(
     () => localStorage.getItem("devin-web.showArchived") === "1"
@@ -231,6 +269,11 @@ export default function Sidebar({
       .filter(Boolean);
   }, [groups, query]);
 
+  const visibleIds = useMemo(
+    () => filtered.flatMap((g) => g.sessions.map((s) => s.sessionId)),
+    [filtered]
+  );
+
   const sessionMenu = (e, s, cwd) => {
     e.preventDefault();
     e.stopPropagation();
@@ -246,6 +289,7 @@ export default function Sidebar({
             onOpenSession(s);
           },
         },
+        { label: "批量选择", icon: CheckSquare, onClick: () => enterSelect(s.sessionId) },
         {
           label: s.pinned ? "取消置顶" : "置顶会话",
           icon: s.pinned ? PinOff : Pin,
@@ -338,6 +382,13 @@ export default function Sidebar({
             onChange={(e) => setQuery(e.target.value)}
           />
         </div>
+        <button
+          className={"icon-ghost" + (selectMode ? " on" : "")}
+          title={selectMode ? "退出批量选择" : "批量选择"}
+          onClick={() => (selectMode ? exitSelect() : enterSelect())}
+        >
+          <CheckSquare size={15} />
+        </button>
         <span className="sort-pill" title="排序方式">
           <select
             className="sort-sel"
@@ -374,6 +425,29 @@ export default function Sidebar({
               }}
               onContextMenu={(e) => groupMenu(e, g)}
             >
+              {selectMode && (
+                <input
+                  type="checkbox"
+                  className="sr-check"
+                  checked={g.sessions.length > 0 && g.sessions.every((s) => sel.has(s.sessionId))}
+                  ref={(el) => {
+                    if (el)
+                      el.indeterminate =
+                        g.sessions.some((s) => sel.has(s.sessionId)) &&
+                        !g.sessions.every((s) => sel.has(s.sessionId));
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                  onChange={(e) => {
+                    const on = e.target.checked;
+                    setSel((prev) => {
+                      const next = new Set(prev);
+                      for (const s of g.sessions)
+                        on ? next.add(s.sessionId) : next.delete(s.sessionId);
+                      return next;
+                    });
+                  }}
+                />
+              )}
               <span className="ws-chev">
                 <ChevronRight size={13} />
               </span>
@@ -401,8 +475,9 @@ export default function Sidebar({
                   return (
                     <div
                       key={s.sessionId}
-                      className={"session-row" + (s.sessionId === activeId ? " active" : "")}
+                      className={"session-row" + (s.sessionId === activeId ? " active" : "") + (selectMode && sel.has(s.sessionId) ? " sel" : "")}
                       onClick={() => {
+                        if (selectMode) return toggleSel(s.sessionId);
                         onFocusWorkspace(g.cwd);
                         onOpenSession(s);
                       }}
@@ -410,6 +485,15 @@ export default function Sidebar({
                       title={s.title || s.sessionId}
                     >
                       <div className="sr-top">
+                        {selectMode && (
+                          <input
+                            type="checkbox"
+                            className="sr-check"
+                            checked={sel.has(s.sessionId)}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={() => toggleSel(s.sessionId)}
+                          />
+                        )}
                         {renaming === s.sessionId ? (
                           <RenameInput
                             initial={s.title || s.sessionId}
@@ -461,6 +545,32 @@ export default function Sidebar({
         ))}
       </div>
 
+      {selectMode && (
+        <div className="sel-bar">
+          <span className="sel-n">已选 {sel.size}</span>
+          <button
+            className="sel-btn"
+            onClick={() => setSel(new Set(visibleIds))}
+          >
+            全选
+          </button>
+          <button className="sel-btn" onClick={() => setSel(new Set())}>
+            清空
+          </button>
+          <span className="sel-sp" />
+          <button
+            className="sel-btn danger"
+            disabled={!sel.size}
+            onClick={() => setConfirmBatch(true)}
+          >
+            删除
+          </button>
+          <button className="sel-btn" title="退出批量选择" onClick={exitSelect}>
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
       <AccountUsage />
       <div className="sb-foot">
         <span className={"conn" + (wsUp ? " up" : "")} />
@@ -490,6 +600,18 @@ export default function Sidebar({
             setConfirmDel(null);
           }}
           onCancel={() => setConfirmDel(null)}
+        />
+      )}
+      {confirmBatch && (
+        <ConfirmDialog
+          title="批量删除会话"
+          message={`确定删除选中的 ${sel.size} 个会话吗？此操作不可撤销。`}
+          confirmLabel={`删除 ${sel.size} 个`}
+          onConfirm={() => {
+            onDeleteSessions?.([...sel]);
+            exitSelect();
+          }}
+          onCancel={() => setConfirmBatch(false)}
         />
       )}
     </aside>

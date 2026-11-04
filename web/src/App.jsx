@@ -612,6 +612,25 @@ export default function App() {
     []
   );
 
+  const deleteSessions = useCallback(
+    async (ids) => {
+      const set = new Set(ids);
+      try {
+        await api.post("/api/sessions/batch-delete", { ids });
+        setSessionList((l) => l.filter((s) => !set.has(s.sessionId)));
+        setSessionData((sd) => {
+          const n = { ...sd };
+          for (const id of ids) delete n[id];
+          return n;
+        });
+        if (set.has(activeRef.current.id)) setActiveId(null);
+      } catch (e) {
+        setBanner(`批量删除失败: ${e.message}`);
+      }
+    },
+    []
+  );
+
   const renameSession = useCallback(
     async (sid, title) => {
       try {
@@ -835,6 +854,7 @@ export default function App() {
         onNewSession={createSession}
         onOpenSession={openSession}
         onDeleteSession={deleteSession}
+        onDeleteSessions={deleteSessions}
         onRenameSession={renameSession}
         onReleaseSession={releaseSession}
         onExportSession={exportSession}

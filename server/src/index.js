@@ -334,6 +334,21 @@ app.delete("/api/sessions/:id", async (req, res) => {
   }
 });
 
+app.post("/api/sessions/batch-delete", async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.ids)
+      ? req.body.ids.filter((x) => typeof x === "string" && x).slice(0, 500)
+      : [];
+    if (!ids.length) return res.status(400).json({ error: "ids required" });
+    // pi deletes are fire-and-forget inside the hub (tombstones cover the
+    // in-flight window), so this loop resolves as fast as the local cleanup.
+    for (const id of ids) await hubFor(id).deleteSession(id);
+    res.json({ ok: true, deleted: ids.length });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
 app.get("/api/sessions/:id/history", (req, res) => {
   const s = hubFor(req.params.id).sessions.get(req.params.id);
   res.json({ events: s?.events ?? [], attached: !!s?.attached });
