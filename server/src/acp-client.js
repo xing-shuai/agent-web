@@ -4,8 +4,8 @@ import { EventEmitter } from "node:events";
 const REQUEST_TIMEOUT_MS = 60_000;
 
 /**
- * AcpClient manages a single `devin acp` subprocess and speaks
- * newline-delimited JSON-RPC 2.0 over its stdin/stdout.
+ * AcpClient manages a single agent ACP subprocess (e.g. `devin acp`,
+ * `pi-acp`) and speaks newline-delimited JSON-RPC 2.0 over its stdin/stdout.
  *
  * Events:
  *  - "sessionUpdate"   (sessionId, update)
@@ -15,9 +15,12 @@ const REQUEST_TIMEOUT_MS = 60_000;
  *  - "exit"            (code, signal)
  */
 export class AcpClient extends EventEmitter {
-  constructor(devinBin = "devin") {
+  constructor({ bin = "devin", args = ["acp"], label = "devin acp", initMeta = {} } = {}) {
     super();
-    this.devinBin = devinBin;
+    this.bin = bin;
+    this.args = args;
+    this.label = label;
+    this.initMeta = initMeta;
     this.proc = null;
     this.nextId = 1;
     this.pending = new Map(); // id -> {resolve, reject}
@@ -32,7 +35,7 @@ export class AcpClient extends EventEmitter {
     if (this.starting) return this.starting;
 
     this.starting = new Promise((resolve, reject) => {
-      const proc = spawn(this.devinBin, ["acp"], {
+      const proc = spawn(this.bin, this.args, {
         stdio: ["pipe", "pipe", "inherit"],
       });
       this.proc = proc;
@@ -52,7 +55,7 @@ export class AcpClient extends EventEmitter {
         this.pending.clear();
         for (const p of pendings) {
           clearTimeout(p.timer);
-          p.reject(new Error(`devin acp exited (code=${code} signal=${signal})`));
+          p.reject(new Error(`${this.label} exited (code=${code} signal=${signal})`));
         }
         this.proc = null;
         this.starting = null;
@@ -65,18 +68,7 @@ export class AcpClient extends EventEmitter {
         clientCapabilities: {
           fs: { readTextFile: false, writeTextFile: false },
           terminal: false,
-          // Devin extension flags — these gate which slash commands the agent
-          // advertises in available_commands_update.
-          //   chains:                 +/btw
-          //   workspaceDirCommands:   +/add-dir /undo-add-dir /remove-dir
-          _meta: {
-            "cognition.ai/chains": true,
-            "cognition.ai/workspaceDirCommands": true,
-            // Unlock the revert/* RPC namespace (listSteps/forkFromStep —
-            // verified working). Only flags for RPCs we actually call.
-            "cognition.ai/revert": true,
-            "cognition.ai/revertByUserMessageId": true,
-          },
+          _meta: this.initMeta,
         },
         clientInfo: { name: "devin-web", title: "Devin Web", version: "0.1.0" },
       })
@@ -171,7 +163,7 @@ export class AcpClient extends EventEmitter {
 
   #send(obj) {
     if (!this.proc || this.proc.killed || this.proc.exitCode != null || this.proc.stdin.destroyed)
-      throw new Error("devin acp is not running");
+      throw new Error(`${this.label} is not running`);
     this.proc.stdin.write(JSON.stringify(obj) + "\n");
   }
 

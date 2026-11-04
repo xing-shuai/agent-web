@@ -368,6 +368,11 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
   flex: 1; min-width: 0; font-size: 13px; color: inherit;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.sb-agent-tag {
+  flex: none; font-size: 9.5px; line-height: 1; padding: 2px 5px;
+  border: 1px solid var(--border); border-radius: 99px;
+  color: var(--text-3); vertical-align: 1px; margin-right: 5px;
+}
 .sr-time { font-size: 11px; color: var(--text-3); flex: none; }
 .sr-more {
   position: absolute; right: 6px; top: 6px;
@@ -445,6 +450,17 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
 }
 .welcome h1 { font-size: 22px; margin: 0 0 8px; font-weight: 600; letter-spacing: -0.01em; }
 .welcome .sub { color: var(--text-2); font-size: 14px; margin: 0 0 26px; }
+.agent-seg {
+  display: flex; gap: 4px; margin: 0 auto 18px; width: fit-content; max-width: 100%;
+}
+.agent-seg-opt {
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 6px 18px; border: 1px solid var(--border);
+  border-radius: var(--r-sm); background: none; color: var(--text-2);
+  font-size: 12px; cursor: pointer;
+}
+.agent-seg-opt:hover { background: var(--hover); }
+.agent-seg-opt.cur { border-color: var(--accent-strong); color: var(--accent); background: var(--accent-soft); }
 .welcome-actions { display: flex; gap: 10px; margin-bottom: 34px; flex-wrap: wrap; justify-content: center; }
 .welcome-actions button { display: inline-flex; align-items: center; gap: 7px; padding: 9px 16px; font-size: 13.5px; }
 .recent-grid {

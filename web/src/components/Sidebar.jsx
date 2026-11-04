@@ -120,6 +120,7 @@ export default function Sidebar({
   onPinSession,
   onArchiveSession,
   unreadIds,
+  agentsById,
   notifyEnabled,
   onToggleNotify,
 }) {
@@ -421,6 +422,11 @@ export default function Sidebar({
                         ) : (
                           <div className="session-title">
                             {s.pinned && <Pin size={11} className="pin-ic" />}
+                            {s.agent && s.agent !== "devin" && (
+                              <span className="sb-agent-tag">
+                                {agentsById?.get(s.agent)?.name || s.agent}
+                              </span>
+                            )}
                             {s.title || s.sessionId}
                           </div>
                         )}

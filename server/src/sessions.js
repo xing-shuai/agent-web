@@ -77,10 +77,12 @@ try {
  * buffered so late-joining browsers can replay the transcript.
  */
 export class SessionHub extends EventEmitter {
-  constructor(acp, statePath) {
+  constructor(acp, statePath, { agent = "devin", devinExt = true } = {}) {
     super();
     this.acp = acp;
     this.statePath = statePath;
+    this.agent = agent;
+    this.devinExt = devinExt;
     /** @type {Map<string, {id:string, cwd:string, attached:boolean, attaching:Promise|null, events:Array, subscribers:Set, pendingPermissions:Map, prompting:number, title?:string}>} */
     this.sessions = new Map();
     this.imgCache = new Map();
@@ -157,7 +159,7 @@ export class SessionHub extends EventEmitter {
       if (msg.method === "session/request_permission") {
         const sessionId = msg.params?.sessionId;
         const s = sessionId && this.sessions.get(sessionId);
-        const key = `perm-${msg.id}`;
+        const key = `perm-${this.agent}-${msg.id}`;
         const entry = { requestId: key, respond, params: msg.params };
         if (s) {
           s.pendingPermissions.set(key, entry);
@@ -248,7 +250,8 @@ export class SessionHub extends EventEmitter {
     this._mirrorTimer.unref();
     // Faster path: watch the session store — every CLI write triggers a
     // mirror pass ~150ms later instead of waiting for the next poll tick.
-    try {
+    // Devin-only: other agents have no sqlite session store.
+    if (this.devinExt) try {
       const dbPath =
         process.env.DEVIN_SESSIONS_DB ||
         path.join(os.homedir(), ".local/share/devin/cli/sessions.db");
@@ -589,6 +592,9 @@ export class SessionHub extends EventEmitter {
    * to the updatedAt freshness window when the db is unavailable.
    */
   #sessDb() {
+    // Devin-only store — a null here disables the mirror, the user-message
+    // graft, the activity probe and sqlite image lookups all at once.
+    if (!this.devinExt) return null;
     // Retry a failed/absent open periodically — the db may not exist yet on
     // first boot and a cached null would silently kill all mirroring.
     if (!this._sessDb && Date.now() - (this._sessDbT || 0) > 30_000) {
@@ -1118,6 +1124,11 @@ export class SessionHub extends EventEmitter {
     const activity = this.#activityProbe();
     const now = Date.now();
     for (const it of sessions) {
+      // Locally stored rename (agents without a rename RPC) overrides the
+      // agent's title — applied BEFORE #setMeta so the override is what gets
+      // persisted back, surviving later refreshes.
+      it.title = this.state.sessions[it.sessionId]?.customTitle || it.title;
+      it.agent = this.agent;
       this.#setMeta(it.sessionId, { cwd: it.cwd, title: it.title, updatedAt: it.updatedAt });
       it.pinned = !!this.state.sessions[it.sessionId]?.pinned;
       it.archived = !!this.state.sessions[it.sessionId]?.archived;
@@ -1289,6 +1300,7 @@ export class SessionHub extends EventEmitter {
 
   /** Revert steps = the session's prompt checkpoints (listSteps RPC). */
   async revertSteps(sessionId, cwd) {
+    if (!this.devinExt) throw new Error("该 agent 不支持分叉");
     const s = await this.ensureAttached(sessionId, cwd);
     const r = await this.acp.request("_cognition.ai/revert/listSteps", { sessionId });
     return r?.steps || [];
@@ -1297,6 +1309,7 @@ export class SessionHub extends EventEmitter {
   /** Fork the session at a user-prompt step → a NEW session id.
    *  `stepIndex` = index among kind:"prompt" steps (== user message order). */
   async forkAtStep(sessionId, cwd, stepIndex) {
+    if (!this.devinExt) throw new Error("该 agent 不支持分叉");
     const steps = await this.revertSteps(sessionId, cwd);
     const prompts = steps.filter((st) => st.kind === "prompt");
     const st = prompts[stepIndex];
@@ -1322,6 +1335,7 @@ export class SessionHub extends EventEmitter {
    *  surfaces user_message_chunk from that table, so web-sent prompts vanish
    *  on reload. Mirror the CLI's own write (single INSERT, safe under WAL). */
   #recordPromptHistory(sessionId, blocks) {
+    if (!this.devinExt) return;
     try {
       const text = (blocks || [])
         .filter((b) => b.type === "text" && b.text)
@@ -1344,6 +1358,24 @@ export class SessionHub extends EventEmitter {
   }
 
   async renameSession(sessionId, title) {
+    // Agents without a rename RPC: the title lives in our own meta only
+    // (customTitle overrides the agent's title in listSessions).
+    if (!this.devinExt) {
+      const s = this.sessions.get(sessionId);
+      this.#setMeta(sessionId, { title, customTitle: title });
+      if (s) s.title = title;
+      this.#broadcast(
+        sessionId,
+        {
+          type: "session_update",
+          sessionId,
+          update: { sessionUpdate: "session_info_update", title },
+          gen: s?.gen ?? 0,
+        },
+        { global: true }
+      );
+      return { ok: true, persisted: true };
+    }
     // ACP rename only when we already hold the session — attaching a free one
     // just to set a title replays the whole transcript, and a locked one
     // would fail outright. Otherwise write the sqlite store directly (single

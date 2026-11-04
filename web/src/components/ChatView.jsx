@@ -247,7 +247,7 @@ const Item = React.memo(function Item({ item, userIndex, onFork, forkBusy, onRes
   }
 });
 
-export default function ChatView({ sessionId, session, wsUp, home, onSend, onCancel, onDequeue, onEditQueued, composerInject, onEditPrompt, onFork, forkBusy, onConfig, onPermission, onRetry, onRetryPrompt, onRelease, onOpenDrawer, onExport }) {
+export default function ChatView({ sessionId, session, wsUp, home, onSend, onCancel, onDequeue, onEditQueued, composerInject, onEditPrompt, canFork = true, onFork, forkBusy, onConfig, onPermission, onRetry, onRetryPrompt, onRelease, onOpenDrawer, onExport }) {
   const scrollRef = useRef(null);
   const [view, setViewState] = useState(getView);
   const pickView = (v) => {
@@ -597,7 +597,7 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
             <Item
               item={w.it}
               userIndex={w.userIndex}
-              onFork={session.attached && !session.lockError ? onFork : null}
+              onFork={canFork && session.attached && !session.lockError ? onFork : null}
               forkBusy={forkBusy}
               onResend={session.attached ? (t) => onSend([{ type: "text", text: t }]) : null}
               onEdit={session.attached ? onEditPrompt : null}

@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "express": "^4.21.0",
+    "pi-acp": "0.0.34",
     "ws": "^8.18.0"
   }
 }

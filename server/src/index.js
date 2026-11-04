@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AcpClient } from "./acp-client.js";
 import { SessionHub } from "./sessions.js";
+import { buildAgents } from "./agents.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..", "..");
@@ -15,8 +16,38 @@ const DATA_DIR = process.env.DEVIN_WEB_DATA || path.join(ROOT, "server", "data")
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || "127.0.0.1";
 
-const acp = new AcpClient(process.env.DEVIN_BIN || "devin");
-const hub = new SessionHub(acp, path.join(DATA_DIR, "state.json"));
+// One ACP client + SessionHub per enabled agent (DEVIN_WEB_AGENTS). The
+// first entry is primary: it owns the shared workspace list in state.json;
+// every other agent persists its own metadata in state.<id>.json.
+const agents = buildAgents();
+const hubs = new Map();
+for (const a of agents) {
+  const acp = new AcpClient({
+    bin: a.bin,
+    args: a.args,
+    label: `${a.id} acp`,
+    initMeta: a.initMeta,
+  });
+  const statePath = path.join(
+    DATA_DIR,
+    a.devinExt ? "state.json" : `state.${a.id}.json`
+  );
+  hubs.set(a.id, new SessionHub(acp, statePath, { agent: a.id, devinExt: a.devinExt }));
+}
+const primary = agents[0];
+const hub = hubs.get(primary?.id);
+
+// Route a session id to its hub: whichever hub already knows it; otherwise
+// UUID-shaped ids go to the pi hub (devin ids are short, pi's are UUIDs);
+// anything else falls back to primary.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function hubFor(sessionId) {
+  for (const h of hubs.values()) {
+    if (h.sessions.has(sessionId) || h.state.sessions[sessionId]) return h;
+  }
+  if (UUID_RE.test(sessionId || "") && hubs.has("pi")) return hubs.get("pi");
+  return hub;
+}
 
 const app = express();
 app.use(express.json({ limit: "50mb" }));
@@ -52,7 +83,15 @@ app.use("/api", (req, res, next) => {
 
 const expandHome = (p) => (p === "~" || p?.startsWith("~/") ? path.join(os.homedir(), p.slice(1)) : p);
 
-app.get("/api/health", (_req, res) => res.json({ ok: true, ...hub.status() }));
+app.get("/api/health", (_req, res) => {
+  const agents = {};
+  for (const [id, h] of hubs) agents[id] = h.status();
+  res.json({ ok: true, agents });
+});
+
+app.get("/api/agents", (_req, res) => {
+  res.json({ agents: agents.map((a) => ({ id: a.id, name: a.name, caps: a.caps })) });
+});
 
 app.get("/api/state", (_req, res) => {
   res.json({ workspaces: hub.workspaces, home: os.homedir(), sessions: hub.state.sessions });
@@ -192,12 +231,21 @@ app.post("/api/workspaces", (req, res) => {
 
 // ---------- sessions ----------
 app.get("/api/sessions", async (req, res) => {
-  try {
-    const sessions = await hub.listSessions(req.query.cwd ? path.resolve(expandHome(req.query.cwd)) : undefined);
-    res.json({ sessions });
-  } catch (e) {
-    res.status(502).json({ error: e.message });
-  }
+  const cwd = req.query.cwd ? path.resolve(expandHome(req.query.cwd)) : undefined;
+  const settled = await Promise.allSettled([...hubs.values()].map((h) => h.listSessions(cwd)));
+  const sessions = [];
+  let err = null;
+  settled.forEach((r, i) => {
+    if (r.status === "fulfilled") sessions.push(...r.value);
+    else {
+      err = r.reason;
+      console.error(`[devin-web] listSessions failed for agent ${[...hubs.keys()][i]}:`, r.reason?.message || r.reason);
+    }
+  });
+  // A failing hub degrades gracefully — only an all-fail surfaces an error.
+  if (settled.every((r) => r.status === "rejected"))
+    return res.status(502).json({ error: err?.message || "all agents failed" });
+  res.json({ sessions });
 });
 
 app.post("/api/sessions", async (req, res) => {
@@ -206,7 +254,13 @@ app.post("/api/sessions", async (req, res) => {
     if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
       return res.status(400).json({ error: `not a directory: ${cwd}` });
     }
-    const created = await hub.createSession(cwd);
+    const agentId = req.body.agent || primary?.id;
+    const h = hubs.get(agentId);
+    if (!h) return res.status(400).json({ error: `unknown agent: ${agentId}` });
+    const created = await h.createSession(cwd);
+    // Workspaces are shared and owned by the primary hub — a non-primary
+    // hub's own addWorkspace only writes its private state file.
+    if (h !== hub) hub.addWorkspace(cwd);
     res.json(created);
   } catch (e) {
     res.status(502).json({ error: e.message });
@@ -215,7 +269,7 @@ app.post("/api/sessions", async (req, res) => {
 
 app.post("/api/sessions/:id/close", async (req, res) => {
   try {
-    res.json(await hub.closeSession(req.params.id));
+    res.json(await hubFor(req.params.id).closeSession(req.params.id));
   } catch (e) {
     res.status(502).json({ error: e.message });
   }
@@ -225,7 +279,7 @@ app.post("/api/sessions/:id/rename", async (req, res) => {
   try {
     const title = String(req.body.title || "").trim();
     if (!title) return res.status(400).json({ error: "empty title" });
-    await hub.renameSession(req.params.id, title);
+    await hubFor(req.params.id).renameSession(req.params.id, title);
     res.json({ ok: true });
   } catch (e) {
     res.status(502).json({ error: e.message });
@@ -234,7 +288,7 @@ app.post("/api/sessions/:id/rename", async (req, res) => {
 
 app.post("/api/sessions/:id/archive", async (req, res) => {
   try {
-    res.json(await hub.setArchived(req.params.id, !!req.body?.archived));
+    res.json(await hubFor(req.params.id).setArchived(req.params.id, !!req.body?.archived));
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -242,7 +296,7 @@ app.post("/api/sessions/:id/archive", async (req, res) => {
 
 app.post("/api/sessions/:id/pin", async (req, res) => {
   try {
-    res.json(await hub.setPinned(req.params.id, !!req.body?.pinned));
+    res.json(await hubFor(req.params.id).setPinned(req.params.id, !!req.body?.pinned));
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -255,7 +309,7 @@ app.post("/api/sessions/:id/fork", async (req, res) => {
     const idx = Number(req.body?.stepIndex ?? -1);
     if (!Number.isInteger(idx) || idx < 0)
       return res.status(400).json({ error: "stepIndex required" });
-    const r = await hub.forkAtStep(req.params.id, req.body?.cwd, idx);
+    const r = await hubFor(req.params.id).forkAtStep(req.params.id, req.body?.cwd, idx);
     res.json(r);
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -264,7 +318,7 @@ app.post("/api/sessions/:id/fork", async (req, res) => {
 
 app.delete("/api/sessions/:id", async (req, res) => {
   try {
-    await hub.deleteSession(req.params.id);
+    await hubFor(req.params.id).deleteSession(req.params.id);
     res.json({ ok: true });
   } catch (e) {
     res.status(502).json({ error: e.message });
@@ -272,7 +326,7 @@ app.delete("/api/sessions/:id", async (req, res) => {
 });
 
 app.get("/api/sessions/:id/history", (req, res) => {
-  const s = hub.sessions.get(req.params.id);
+  const s = hubFor(req.params.id).sessions.get(req.params.id);
   res.json({ events: s?.events ?? [], attached: !!s?.attached });
 });
 
@@ -280,7 +334,7 @@ app.get("/api/sessions/:id/history", (req, res) => {
 // instead of base64 so multi-MB payloads can't push the transcript buffer
 // over its byte budget; images are served lazily from sqlite on <img> load.
 app.get("/api/sessions/:id/img/:mid/:idx", (req, res) => {
-  const img = hub.sessionImage(req.params.id, req.params.mid, Number(req.params.idx) || 0);
+  const img = hubFor(req.params.id).sessionImage(req.params.id, req.params.mid, Number(req.params.idx) || 0);
   if (!img?.data) return res.status(404).end();
   res
     .setHeader("Content-Type", img.mimeType)
@@ -294,8 +348,9 @@ app.get("/api/sessions/:id/img/:mid/:idx", (req, res) => {
 app.get("/api/sessions/:id/raw", (req, res) => {
   const p = String(req.query.path || "");
   if (!p || p.includes("\0")) return res.status(400).end();
-  const s = hub.sessions.get(req.params.id);
-  const cwd = s?.cwd || hub.state.sessions[req.params.id]?.cwd;
+  const h = hubFor(req.params.id);
+  const s = h.sessions.get(req.params.id);
+  const cwd = s?.cwd || h.state.sessions[req.params.id]?.cwd;
   const file = path.isAbsolute(p) ? p : path.resolve(cwd || "/", p);
   res.sendFile(file, { acceptRanges: false }, (err) => {
     if (err && !res.headersSent) res.status(404).end();
@@ -374,7 +429,8 @@ wss.on("connection", (ws) => {
       switch (msg.type) {
         case "subscribe": {
           const subscribedAt = Date.now();
-          const s = hub.subscribe(ws, msg.sessionId, msg.cwd);
+          const h = hubFor(msg.sessionId);
+          const s = h.subscribe(ws, msg.sessionId, msg.cwd);
           let sent = false;
           const sendReady = () => {
             if (sent) return;
@@ -393,12 +449,12 @@ wss.on("connection", (ws) => {
                 events: s.events,
                 attached: s.attached,
                 gen: s.gen,
-                state: hub.stateOf(msg.sessionId),
+                state: h.stateOf(msg.sessionId),
                 modes: s.modes,
                 configOptions: s.configOptions,
-                availableCommands: s.commands || hub.commandsByCwd.get(s.cwd),
-                usage: s.usage || hub.usageById.get(msg.sessionId),
-                queue: hub.queueView?.(msg.sessionId) ?? [],
+                availableCommands: s.commands || h.commandsByCwd.get(s.cwd),
+                usage: s.usage || h.usageById.get(msg.sessionId),
+                queue: h.queueView?.(msg.sessionId) ?? [],
               });
             }
             // Re-send unanswered permission cards — they're live JSON-RPC
@@ -417,7 +473,7 @@ wss.on("connection", (ws) => {
           // success → the freshly replayed transcript; failure (locked) →
           // none — the sqlite mirror's rebuilt history covers it.
           // (ensureAttached returns the bare entry when already attached.)
-          Promise.resolve(hub.ensureAttached(msg.sessionId, msg.cwd))
+          Promise.resolve(h.ensureAttached(msg.sessionId, msg.cwd))
             .then(sendReady)
             .catch((e) => {
               reply({
@@ -443,33 +499,34 @@ wss.on("connection", (ws) => {
           break;
         }
         case "unsubscribe":
-          hub.unsubscribe(ws, msg.sessionId);
+          for (const h of hubs.values()) h.unsubscribe(ws, msg.sessionId);
           break;
         case "watch":
-          hub.allSubscribers.add(ws);
+          for (const h of hubs.values()) h.allSubscribers.add(ws);
           break;
         case "prompt": {
           const blocks = (msg.blocks || []).length
             ? msg.blocks
             : [{ type: "text", text: msg.text || "" }];
-          const result = await hub.prompt(msg.sessionId, msg.cwd, blocks);
+          const result = await hubFor(msg.sessionId).prompt(msg.sessionId, msg.cwd, blocks);
           reply({ type: "prompt_result", sessionId: msg.sessionId, ...result });
           break;
         }
         case "cancel":
-          await hub.cancel(msg.sessionId);
+          await hubFor(msg.sessionId).cancel(msg.sessionId);
           break;
         case "queue_remove":
           reply({
             type: "queue_result",
             sessionId: msg.sessionId,
-            removed: !!hub.removeQueued(msg.sessionId, msg.queueId),
+            removed: !!hubFor(msg.sessionId).removeQueued(msg.sessionId, msg.queueId),
           });
           break;
         case "queue_edit": {
-          const q = hub.removeQueued(msg.sessionId, msg.queueId);
+          const h = hubFor(msg.sessionId);
+          const q = h.removeQueued(msg.sessionId, msg.queueId);
           if (q) {
-            const r = await hub.prompt(msg.sessionId, msg.cwd, msg.blocks || q.blocks);
+            const r = await h.prompt(msg.sessionId, msg.cwd, msg.blocks || q.blocks);
             reply({ type: "prompt_result", sessionId: msg.sessionId, ...r });
           } else {
             reply({ type: "queue_result", sessionId: msg.sessionId, removed: false });
@@ -477,10 +534,12 @@ wss.on("connection", (ws) => {
           break;
         }
         case "permission_response":
-          hub.permissionResponse(msg.requestId, msg.optionId, !!msg.cancelled);
+          // Request ids are agent-namespaced; try each hub until one owns it.
+          for (const h of hubs.values())
+            if (h.permissionResponse(msg.requestId, msg.optionId, !!msg.cancelled)) break;
           break;
         case "set_config_option": {
-          const r = await hub.setConfigOption(msg.sessionId, msg.configId, msg.value);
+          const r = await hubFor(msg.sessionId).setConfigOption(msg.sessionId, msg.configId, msg.value);
           reply({ type: "config_options", sessionId: msg.sessionId, ...r });
           break;
         }
@@ -493,13 +552,15 @@ wss.on("connection", (ws) => {
     }
   });
 
-  ws.on("close", () => hub.dropSocket(ws));
+  ws.on("close", () => {
+    for (const h of hubs.values()) h.dropSocket(ws);
+  });
 });
 
 setInterval(() => {
   for (const ws of wss.clients) {
     if (!ws.isAlive) {
-      hub.dropSocket(ws);
+      for (const h of hubs.values()) h.dropSocket(ws);
       ws.terminate();
     } else {
       ws.isAlive = false;
@@ -512,11 +573,9 @@ server.listen(PORT, HOST, () => {
   console.log(`devin-web server listening on http://${HOST}:${PORT}`);
 });
 
-process.on("SIGINT", () => {
-  acp.kill();
-  process.exit(0);
-});
-process.on("SIGTERM", () => {
-  acp.kill();
-  process.exit(0);
-});
+for (const sig of ["SIGINT", "SIGTERM"]) {
+  process.on(sig, () => {
+    for (const h of hubs.values()) h.acp.kill();
+    process.exit(0);
+  });
+}

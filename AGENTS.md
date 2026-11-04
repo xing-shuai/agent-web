@@ -22,6 +22,18 @@ provides workspace selection, session management, and a chat transcript.
 - `npm run dev -w web` — Vite dev server on :5173 (proxies /api and /ws)
 - Env: `PORT`, `HOST`, `DEVIN_BIN`, `DEVIN_WEB_DATA`, `DEVIN_WEB_TOKEN` (optional bearer token for /api+/ws; share URL as `?token=`), `DEVIN_WEB_ORIGINS` (extra allowed WS origins)
 
+## Multi-agent
+
+- One `AcpClient` + `SessionHub` per agent (registry in `server/src/agents.js`);
+  `DEVIN_WEB_AGENTS` selects/enables them (comma list, default `devin,pi`,
+  first = primary, owns the shared workspace list in `state.json`).
+- `pi` uses the `pi-acp` adapter (`PI_ACP_BIN` overrides its path) and gets
+  `state.pi.json`; devin-only behaviour (sqlite mirror, locks, fork/revert,
+  prompt_history) is gated on `devinExt`.
+- Sessions carry an `agent` tag; the server routes by id (UUID → pi).
+  `GET /api/agents` advertises `{id, name, caps}`; `caps.fork` hides the
+  per-message fork button.
+
 ## ACP notes
 
 - One `devin acp` process multiplexes all web sessions by `sessionId`.

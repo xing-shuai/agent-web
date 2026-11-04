@@ -23,6 +23,14 @@ export default function App() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [wsUp, setWsUp] = useState(false);
+  // Agent registry from the backend; fallback keeps the UI working when the
+  // endpoint is unreachable (older server / transient error).
+  const [agents, setAgents] = useState([
+    { id: "devin", name: "Devin", caps: { fork: true, quota: true } },
+  ]);
+  const [agentPref, setAgentPref] = useState(
+    () => localStorage.getItem("dw.agent") || null
+  );
   const [banner, setBanner] = useState(null);
   const [toast, setToast] = useState(null); // {text, kind}
   const [notifyEnabled, setNotifyEnabled] = useState(
@@ -54,6 +62,12 @@ export default function App() {
   // ---------- boot ----------
   useEffect(() => {
     api
+      .get("/api/agents")
+      .then((r) => {
+        if (Array.isArray(r?.agents) && r.agents.length) setAgents(r.agents);
+      })
+      .catch(() => {});
+    api
       .get("/api/state")
       .then((s) => {
         setWorkspaces(s.workspaces || []);
@@ -70,6 +84,27 @@ export default function App() {
   useEffect(() => {
     if (activeWorkspace) localStorage.setItem("devin-web.workspace", activeWorkspace);
   }, [activeWorkspace]);
+
+  // Agent preference: default to the first registered agent; reset when the
+  // stored choice disappears from the registry.
+  useEffect(() => {
+    if (!agents.length) return;
+    if (!agentPref || !agents.some((a) => a.id === agentPref)) {
+      setAgentPref(agents[0].id);
+      return;
+    }
+    localStorage.setItem("dw.agent", agentPref);
+  }, [agents, agentPref]);
+
+  const pickAgent = useCallback((id) => {
+    localStorage.setItem("dw.agent", id);
+    setAgentPref(id);
+  }, []);
+
+  const agentsById = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
+  // The active session's agent (default devin for pre-multi-agent records).
+  const activeAgent = sessionList.find((s) => s.sessionId === activeId)?.agent || "devin";
+  const activeCaps = agentsById.get(activeAgent)?.caps || { fork: true, quota: true };
 
   // Global session list: load once, refresh after prompt/delete, and poll
   // silently so CLI-side changes (new/renamed/deleted sessions) show up.
@@ -336,11 +371,14 @@ export default function App() {
   );
 
   const createSession = useCallback(
-    async (cwd) => {
+    async (cwd, agent) => {
       const dir = cwd || activeWorkspace;
       if (!dir) return setPickerOpen(true);
       try {
-        const res = await api.post("/api/sessions", { cwd: dir });
+        const res = await api.post("/api/sessions", {
+          cwd: dir,
+          agent: agent || agentPref,
+        });
         setDrawerOpen(false);
         setSessionData((sd) => ({
           ...sd,
@@ -359,7 +397,7 @@ export default function App() {
         setBanner(`创建会话失败: ${e.message}`);
       }
     },
-    [activeWorkspace, refreshSessions]
+    [activeWorkspace, agentPref, refreshSessions]
   );
 
   const focusWorkspace = useCallback((cwd) => {
@@ -755,6 +793,13 @@ export default function App() {
   const paletteActions = useMemo(
     () => [
       { id: "new", title: "新建会话", run: () => createSession() },
+      ...(agents.length > 1
+        ? agents.map((a) => ({
+            id: `new-${a.id}`,
+            title: `新建 ${a.name} 会话`,
+            run: () => createSession(undefined, a.id),
+          }))
+        : []),
       {
         id: "focus",
         title: "聚焦输入框",
@@ -772,7 +817,7 @@ export default function App() {
         : []),
       { id: "drawer", title: "打开会话列表", run: () => setDrawerOpen(true) },
     ],
-    [createSession, exportSession, activeId, notifyEnabled, toggleNotify]
+    [createSession, agents, exportSession, activeId, notifyEnabled, toggleNotify]
   );
 
   return (
@@ -796,6 +841,7 @@ export default function App() {
         onPinSession={pinSession}
         onArchiveSession={archiveSession}
         unreadIds={unreadIds}
+        agentsById={agentsById}
         notifyEnabled={notifyEnabled}
         onToggleNotify={toggleNotify}
       />
@@ -824,6 +870,7 @@ export default function App() {
               onEditQueued={editQueuedPrompt}
               composerInject={composerInject}
               onEditPrompt={injectComposer}
+              canFork={!!activeCaps.fork}
               onFork={forkSession}
               forkBusy={forkBusy}
               onConfig={setConfig}
@@ -841,6 +888,9 @@ export default function App() {
             activeWorkspace={activeWorkspace}
             home={home}
             wsUp={wsUp}
+            agents={agents}
+            agentPref={agentPref}
+            onPickAgent={pickAgent}
             onNewSession={createSession}
             onPickWorkspace={openPicker}
             onOpenDrawer={() => setDrawerOpen(true)}
