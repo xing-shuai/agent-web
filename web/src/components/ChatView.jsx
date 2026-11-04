@@ -9,7 +9,6 @@ import {
   Loader2,
   Lock,
   RotateCw,
-  MessageSquare,
   FolderOpen,
   Copy,
   Check,
@@ -650,8 +649,8 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
         )}
         {session.items.length === 0 && !session.attached && (
           <div className="empty-hint col">
-            <MessageSquare size={30} />
-            正在加载会话…
+            <div className="ld-bubble"><span /><span /><span /></div>
+            <span className="ld-text">正在加载会话…</span>
           </div>
         )}
         {visibleItems.map((w) => (

@@ -1153,6 +1153,31 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
 }
 .empty-hint svg { opacity: 0.5; }
 
+/* session loading — typing-dots bubble + shimmering text */
+.ld-bubble {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 11px 14px; border-radius: 14px 14px 14px 4px;
+  background: var(--bg-2); border: 1px solid var(--border);
+}
+.ld-bubble span {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--text-2); opacity: .35;
+  animation: ld-bounce 1.2s infinite ease-in-out;
+}
+.ld-bubble span:nth-child(2) { animation-delay: .15s; }
+.ld-bubble span:nth-child(3) { animation-delay: .3s; }
+@keyframes ld-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: .35; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+.ld-text {
+  background: linear-gradient(90deg, var(--text-3) 40%, var(--text) 50%, var(--text-3) 60%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer 1.8s linear infinite;
+}
+
 /* lock notice */
 .lock-notice { margin: 0 auto 12px; }
 .lock-card {
