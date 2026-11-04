@@ -1944,20 +1944,15 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
 }
 
 /* ---- account quota card (sidebar footer) ---- */
-.acct-usage { border-top: 1px solid var(--border); padding: 6px 10px 2px; display: flex; flex-direction: column; gap: 1px; }
+.acct-usage { border-top: 1px solid var(--border); padding: 4px 10px 2px; display: flex; flex-direction: column; }
 .acct-head {
   display: flex; align-items: center; gap: 6px; width: 100%;
   background: none; border: none; color: var(--text-dim);
-  font: inherit; font-size: 12px; padding: 4px 2px; cursor: pointer;
+  font: inherit; font-size: 11.5px; padding: 1.5px 2px; cursor: pointer;
   border-radius: var(--radius);
 }
 .acct-head:hover { color: var(--text); background: var(--bg-hover); }
-.acct-name { font-weight: 600; color: var(--text); }
-.acct-plan {
-  font-size: 9.5px; font-weight: 600; color: var(--text-faint);
-  border: 1px solid var(--border); border-radius: 3px; padding: 0 3px;
-  text-transform: uppercase; letter-spacing: 0.3px;
-}
+.acct-name { font-weight: 500; color: var(--text-2); }
 .acct-src { padding: 4px 0 2px; }
 .acct-src + .acct-src { border-top: 1px dashed var(--border); margin-top: 4px; }
 .acct-src-title { display: flex; align-items: baseline; gap: 6px; font-size: 11.5px; font-weight: 600; color: var(--text); margin-bottom: 5px; }
@@ -1985,7 +1980,7 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
 .acct-bar > div.amber { background: var(--amber); }
 .acct-bar > div.red { background: var(--red); }
 .acct-sub { font-size: 10.5px; color: var(--text-faint); }
-.acct-mini { margin-left: auto; display: flex; gap: 8px; font-size: 11.5px; }
+.acct-mini { margin-left: auto; display: flex; gap: 6px; font-size: 11px; }
 .acct-item { font-weight: 600; color: var(--text-dim); }
 .acct-item.amber { color: var(--amber); }
 .acct-item.red { color: var(--red); }

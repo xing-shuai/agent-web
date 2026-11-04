@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Gauge, RefreshCw } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import api from "../api.js";
 
 const fmtReset = (ts) => {
@@ -100,11 +100,9 @@ export default function AccountUsage() {
           key={src.id}
           className="acct-head"
           onClick={() => setOpen((o) => !o)}
-          title={`${src.name} 用量 · 点击查看详情`}
+          title={`${src.name}${src.plan ? " " + src.plan : ""} 用量 · 点击查看详情`}
         >
-          <Gauge size={13} />
           <span className="acct-name">{src.name}</span>
-          {src.plan && <span className="acct-plan">{src.plan}</span>}
           <span className="acct-mini">
             {src.error ? (
               <span className="acct-item red">!</span>
