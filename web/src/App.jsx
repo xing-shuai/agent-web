@@ -263,6 +263,35 @@ export default function App() {
           };
         });
       }),
+      wsClient.on("elicitation_request", (m) => {
+        setSessionData((sd) => {
+          const s = sd[m.sessionId] || emptySession();
+          if (s.pendingElicitations.some((p) => p.requestId === m.requestId)) return sd;
+          return {
+            ...sd,
+            [m.sessionId]: {
+              ...s,
+              pendingElicitations: [
+                ...s.pendingElicitations,
+                { requestId: m.requestId, message: m.message, schema: m.schema, agent: m.agent },
+              ],
+            },
+          };
+        });
+      }),
+      wsClient.on("elicitation_resolved", (m) => {
+        setSessionData((sd) => {
+          const s = sd[m.sessionId];
+          if (!s) return sd;
+          return {
+            ...sd,
+            [m.sessionId]: {
+              ...s,
+              pendingElicitations: s.pendingElicitations.filter((p) => p.requestId !== m.requestId),
+            },
+          };
+        });
+      }),
       wsClient.on("permission_resolved", (m) => {
         setSessionData((sd) => {
           const s = sd[m.sessionId];
@@ -666,6 +695,10 @@ export default function App() {
     });
   }, []);
 
+  const answerElicitation = useCallback((requestId, action, content) => {
+    wsClient.send({ type: "elicitation_response", requestId, action, content });
+  }, []);
+
   const deleteSession = useCallback(
     async (sid) => {
       try {
@@ -974,6 +1007,7 @@ export default function App() {
               forkBusy={forkBusy}
               onConfig={setConfig}
               onPermission={answerPermission}
+              onElicitation={answerElicitation}
               onRetry={retryAttach}
               onRetryPrompt={retryPrompt}
               onRelease={releaseSession}

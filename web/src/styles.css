@@ -1381,6 +1381,29 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
 .perm-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .perm-actions button { display: inline-flex; align-items: center; gap: 6px; font-size: calc(12.5px * var(--tfs,1)); }
 
+/* elicitation (ask-user) card */
+.elic-desc { font-size: calc(12px * var(--tfs,1)); color: var(--text-2); margin: 2px 0 8px; white-space: pre-wrap; }
+.elic-field { margin: 8px 0; }
+.elic-label {
+  font-size: calc(12px * var(--tfs,1)); color: var(--text-2); margin-bottom: 5px;
+}
+.elic-label em { color: var(--red); font-style: normal; margin-left: 2px; }
+.elic-field-desc { color: var(--text-3); margin-left: 8px; font-size: calc(11px * var(--tfs,1)); }
+.elic-opts { display: flex; gap: 6px; flex-wrap: wrap; }
+.elic-opt {
+  padding: 5px 12px; border-radius: 999px; font-size: calc(12px * var(--tfs,1));
+  border: 1px solid var(--border); color: var(--text-2); background: var(--bg);
+}
+.elic-opt:hover { border-color: var(--accent); color: var(--text); }
+.elic-opt.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.elic-input {
+  width: 100%; padding: 7px 10px; border-radius: var(--r-sm);
+  border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  font-size: calc(13px * var(--tfs,1)); font-family: inherit;
+}
+.elic-input:focus { outline: none; border-color: var(--accent); }
+.elic-ta { resize: vertical; min-height: 44px; max-height: 160px; }
+
 /* ================= composer ================= */
 /* The composer floats over the transcript inside .dock: a full-bleed band
    whose blur + tint fades in toward the bottom edge, mirroring .chat-head.

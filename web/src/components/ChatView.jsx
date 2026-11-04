@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import ToolCall, { PlanBox, ToolGroup } from "./ToolCall.jsx";
 import PermissionPrompt from "./PermissionPrompt.jsx";
+import ElicitationCard from "./ElicitationCard.jsx";
 import InputBar from "./InputBar.jsx";
 import UsagePop from "./UsagePop.jsx";
 import ConfigMenu from "./ConfigMenu.jsx";
@@ -288,7 +289,7 @@ const Item = React.memo(function Item({ item, userIndex, onFork, forkBusy, onRes
   }
 });
 
-export default function ChatView({ sessionId, session, wsUp, home, onSend, onCancel, onDequeue, onEditQueued, composerInject, onEditPrompt, canFork = true, onFork, forkBusy, onConfig, onPermission, onRetry, onRetryPrompt, onRelease, onOpenDrawer, onExport, agentName = "Devin" }) {
+export default function ChatView({ sessionId, session, wsUp, home, onSend, onCancel, onDequeue, onEditQueued, composerInject, onEditPrompt, canFork = true, onFork, forkBusy, onConfig, onPermission, onElicitation, onRetry, onRetryPrompt, onRelease, onOpenDrawer, onExport, agentName = "Devin" }) {
   const scrollRef = useRef(null);
   const [view, setViewState] = useState(getView);
   const pickView = (v) => {
@@ -787,6 +788,7 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
 
       <div className="dock">
         <PermissionPrompt pendingPermissions={session.pendingPermissions} onPermission={onPermission} agentName={agentName} />
+        <ElicitationCard pendingElicitations={session.pendingElicitations} onAnswer={onElicitation} agentName={agentName} />
         <InputBar
         running={session.running}
         disabled={!wsUp || !!session.lockError}

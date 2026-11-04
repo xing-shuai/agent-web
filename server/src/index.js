@@ -657,6 +657,17 @@ wss.on("connection", (ws) => {
                 options: p.params?.options || [],
               });
             }
+            for (const e of s.pendingElicitations.values()) {
+              reply({
+                type: "elicitation_request",
+                sessionId: msg.sessionId,
+                requestId: e.requestId,
+                agent: h.agent,
+                message: e.params?.message,
+                schema: e.params?.requestedSchema,
+                toolCallId: e.params?.toolCallId || null,
+              });
+            }
           };
           // Wait for the attach attempt to settle, then send ONE history:
           // success → the freshly replayed transcript; failure (locked) →
@@ -728,6 +739,10 @@ wss.on("connection", (ws) => {
           // Request ids are agent-namespaced; try each hub until one owns it.
           for (const h of hubs.values())
             if (h.permissionResponse(msg.requestId, msg.optionId, !!msg.cancelled)) break;
+          break;
+        case "elicitation_response":
+          for (const h of hubs.values())
+            if (h.elicitationResponse(msg.requestId, msg.action, msg.content)) break;
           break;
         case "set_config_option": {
           const r = await hubFor(msg.sessionId).setConfigOption(msg.sessionId, msg.configId, msg.value);

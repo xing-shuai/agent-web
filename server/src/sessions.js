@@ -189,6 +189,32 @@ export class SessionHub extends EventEmitter {
           },
           { global: true }
         );
+      } else if (msg.method === "elicitation/create") {
+        // Agent asks the user a structured question (devin ask_user_question,
+        // pi input/editor via our pi-acp patch). Form mode renders a card;
+        // url mode is declined (no embedded browser here).
+        const params = msg.params || {};
+        const sessionId = params.sessionId;
+        const s = sessionId && this.sessions.get(sessionId);
+        if (!s || params.mode === "url") {
+          respond({ action: "cancel" });
+        } else {
+          const key = `elic-${this.agent}-${msg.id}`;
+          (s.pendingElicitations ||= new Map()).set(key, { requestId: key, respond, params });
+          this.#broadcast(
+            sessionId,
+            {
+              type: "elicitation_request",
+              sessionId,
+              requestId: key,
+              agent: this.agent,
+              message: params.message,
+              schema: params.requestedSchema,
+              toolCallId: params.toolCallId || null,
+            },
+            { global: true }
+          );
+        }
       } else {
         // We don't advertise fs/terminal capabilities; refuse politely so the
         // agent never hangs waiting on us.
@@ -233,6 +259,10 @@ export class SessionHub extends EventEmitter {
             { global: true }
           );
         s.pendingPermissions.clear();
+        for (const e of s.pendingElicitations.values()) {
+          this.#broadcast(s.id, { type: "elicitation_resolved", sessionId: s.id, requestId: e.requestId, cancelled: true }, { global: true });
+        }
+        s.pendingElicitations.clear();
         if (wasAttached)
           this.#broadcast(s.id, { type: "session_state", sessionId: s.id, state: "free" }, { global: true });
       }
@@ -303,6 +333,7 @@ export class SessionHub extends EventEmitter {
         !s.prompting &&
         !s.attaching &&
         s.pendingPermissions.size === 0 &&
+        s.pendingElicitations.size === 0 &&
         now - (s.lastActiveAt || 0) > IDLE_DETACH_MS
       ) {
         console.log(`[devin-web] auto-detaching idle session ${s.id}`);
@@ -316,6 +347,7 @@ export class SessionHub extends EventEmitter {
       if (
         s.prompting > 0 &&
         s.pendingPermissions.size === 0 &&
+        s.pendingElicitations.size === 0 &&
         now - (s.lastActiveAt || 0) > TURN_STALL_MS
       ) {
         console.log(`[devin-web] turn stalled ${Math.round(TURN_STALL_MS / 60000)}min with no events — clearing running flag for ${s.id}`);
@@ -441,6 +473,7 @@ export class SessionHub extends EventEmitter {
         events: [],
         subscribers: new Set(),
         pendingPermissions: new Map(),
+        pendingElicitations: new Map(),
         prompting: 0,
         queue: [], // FIFO of prompts sent while a turn is running
         lastActiveAt: Date.now(),
@@ -1678,6 +1711,7 @@ export class SessionHub extends EventEmitter {
     s.attached = false;
     s.attachWanted = false; // explicit release — hand it to whoever wants it
     s.pendingPermissions.clear();
+    s.pendingElicitations.clear();
     this.#broadcast(sessionId, { type: "session_detached", sessionId }, { global: true });
     this.#broadcast(sessionId, { type: "session_state", sessionId, state: "free" }, { global: true });
     return { closed: true };
@@ -1702,6 +1736,27 @@ export class SessionHub extends EventEmitter {
             optionId: optionId ?? null,
             cancelled: !!cancelled,
           },
+          { global: true }
+        );
+        return true;
+      }
+    }
+    return false;
+  }
+
+  elicitationResponse(requestId, action, content) {
+    for (const s of this.sessions.values()) {
+      const e = s.pendingElicitations?.get(requestId);
+      if (e) {
+        s.pendingElicitations.delete(requestId);
+        e.respond(
+          action === "accept"
+            ? { action: "accept", content: content || {} }
+            : { action: action === "decline" ? "decline" : "cancel" }
+        );
+        this.#broadcast(
+          s.id,
+          { type: "elicitation_resolved", sessionId: s.id, requestId, action },
           { global: true }
         );
         return true;

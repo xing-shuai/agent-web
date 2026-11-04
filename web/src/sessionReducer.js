@@ -9,6 +9,7 @@ export function emptySession() {
     modes: null,
     commands: [],
     pendingPermissions: [],
+    pendingElicitations: [],
     queue: [], // prompts parked while a turn runs (server-side FIFO)
     running: false,
     attached: false,

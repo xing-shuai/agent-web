@@ -68,6 +68,9 @@ export class AcpClient extends EventEmitter {
         clientCapabilities: {
           fs: { readTextFile: false, writeTextFile: false },
           terminal: false,
+          // Form-mode elicitation — agents may ask structured questions
+          // (devin ask_user_question); we render them as answer cards.
+          elicitation: { form: {} },
           _meta: this.initMeta,
         },
         clientInfo: { name: "devin-web", title: "Agent Web", version: "0.1.0" },
