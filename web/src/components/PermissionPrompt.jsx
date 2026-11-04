@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { ShieldAlert, X } from "lucide-react";
+import { HelpCircle, ShieldAlert, X } from "lucide-react";
 
 export default function PermissionPrompt({ pendingPermissions, onPermission, agentName = "Devin" }) {
   // Disable a card's buttons the moment it's answered — the resolved event
@@ -12,13 +12,20 @@ export default function PermissionPrompt({ pendingPermissions, onPermission, age
   };
   return (
     <div className="perm-stack col">
-      {pendingPermissions.map((p) => (
+      {pendingPermissions.map((p) => {
+        // pi-acp bridges extension_ui select/confirm into permission requests
+        // with pi-ui-* toolCallIds — those are questions, not permission asks:
+        // render the dialog title as the prompt and hide the raw JSON blob.
+        const isUiDialog = String(p.toolCall?.toolCallId || "").startsWith("pi-ui-");
+        return (
         <div key={p.requestId} className="perm-card">
           <div className="perm-title">
-            <ShieldAlert size={15} />
-            {agentName} 请求权限<strong>{p.toolCall?.title || p.toolCall?.toolCallId || "操作"}</strong>
+            {isUiDialog ? <HelpCircle size={15} /> : <ShieldAlert size={15} />}
+            {agentName} {isUiDialog ? "提问" : "请求权限"}
+            {!isUiDialog && <strong>{p.toolCall?.title || p.toolCall?.toolCallId || "操作"}</strong>}
           </div>
-          {p.toolCall?.rawInput != null && (
+          {isUiDialog && <div className="elic-msg">{p.toolCall?.title || "请回答"}</div>}
+          {!isUiDialog && p.toolCall?.rawInput != null && (
             <pre className="perm-input">
               {typeof p.toolCall.rawInput === "string"
                 ? p.toolCall.rawInput.slice(0, 2000)
@@ -45,7 +52,8 @@ export default function PermissionPrompt({ pendingPermissions, onPermission, age
             </button>
           </div>
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
