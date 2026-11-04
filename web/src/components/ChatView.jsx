@@ -503,6 +503,7 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
 
   const hiddenCount = Math.max(0, renderItems.length - shown);
   const visibleItems = hiddenCount ? renderItems.slice(-shown) : renderItems;
+  const navMsgs = visibleItems.filter((w) => w.it.kind === "user");
   const loadEarlier = () => {
     const el = scrollRef.current;
     // Anchor: distance from the bottom edge stays constant across the prepend.
@@ -711,6 +712,35 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
         )}
         </ImgSessionCtx.Provider>
       </div>
+      {navMsgs.length > 1 && (
+        <nav className="msg-nav" aria-label="跳转到我的消息">
+          {navMsgs.map((w) => (
+            <div key={w.key} className="mn-tick">
+              <button
+                className="mn-dot"
+                title={(w.it.text || "📷 图片").slice(0, 50)}
+                onClick={() =>
+                  scrollRef.current
+                    ?.querySelector(`[data-ik="${w.key}"]`)
+                    ?.scrollIntoView({ behavior: "smooth", block: "center" })
+                }
+              />
+              <div className="mn-preview">
+                <div className="mn-text">{w.it.text || "📷 图片"}</div>
+                {w.it.text && (
+                  <button
+                    className="mn-copy"
+                    title="复制"
+                    onClick={() => navigator.clipboard?.writeText(w.it.text).catch(() => {})}
+                  >
+                    <Copy size={12} />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </nav>
+      )}
       {showJump && (
         <button className="jump-bottom" onClick={jumpToBottom} title="回到最新消息">
           <ArrowDown size={15} />
