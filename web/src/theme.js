@@ -86,7 +86,6 @@ export const VIEWS = [
   { value: "terminal", name: "终端", description: "等宽字体命令行风格" },
   { value: "notebook", name: "笔记", description: "Jupyter 式编号单元格" },
   { value: "paper", name: "纸张", description: "横线稿纸 + 红色边距线" },
-  { value: "spotlight", name: "聚光", description: "淡化旧内容，突出当前轮" },
 ];
 
 export function getView() {

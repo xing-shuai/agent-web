@@ -358,10 +358,6 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
     }
     if (touched.size)
       withFiles.push({ kind: "filesTouched", key: "ft-end", paths: [...touched] });
-    const lastUser = withFiles.reduce(
-      (acc, it, i) => (it.kind === "user" ? i : acc),
-      -1
-    );
     // Keep item refs untouched — flags ride a parallel wrapper so memoized
     // Item components still hit when only marking changed.
     let uIdx = -1;
@@ -372,7 +368,6 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
         it.kind !== "user" &&
         it.kind !== "filesTouched" &&
         (i === 0 || withFiles[i - 1].kind === "user"),
-      spot: i >= lastUser,
       userIndex: it.kind === "user" ? ++uIdx : null,
     }));
   }, [session.items]);
@@ -663,7 +658,7 @@ export default function ChatView({ sessionId, session, wsUp, home, onSend, onCan
             key={w.key}
             data-ik={w.key}
             className={
-              "col anim-in" + (w.spot ? " spot" : "") + (hits[hitNo] === w.key && searchQ.trim() ? " search-hit" : "")
+              "col anim-in" + (hits[hitNo] === w.key && searchQ.trim() ? " search-hit" : "")
             }
           >
             {view === "timeline" && w.it.t != null && (() => {

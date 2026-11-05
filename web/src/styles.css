@@ -2037,13 +2037,6 @@ body.resizing iframe, body.resizing .transcript { pointer-events: none; }
   [data-view="notebook"] .turn-head::before { display: none; }
 }
 
-/* ---------- 聚光 spotlight: dim all but the latest turn ---------- */
-[data-view="spotlight"] .transcript .col { transition: opacity .25s ease, filter .25s ease; }
-[data-view="spotlight"] .transcript .col:not(.spot) {
-  opacity: .3; filter: saturate(.35);
-}
-[data-view="spotlight"] .transcript .col:not(.spot):hover { opacity: 1; filter: none; }
-
 /* failed optimistic message retry */
 .msg-retry {
   align-self: flex-end;
