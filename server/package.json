@@ -6,11 +6,13 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "postinstall": "node scripts/patch-pi-acp.mjs && node scripts/patch-pi-ask.mjs"
+    "test": "node --test",
+    "postinstall": "node scripts/patch-pi-ask.mjs"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "0.26.0",
+    "@earendil-works/pi-coding-agent": "1.4.0",
     "express": "^4.21.0",
-    "pi-acp": "0.0.34",
     "ws": "^8.18.0"
   }
 }

@@ -19,17 +19,22 @@ provides workspace selection, session management, and a chat transcript.
 - `npm install` — install all workspaces
 - `npm run build` — build frontend to `web/dist`
 - `npm start` / `npm run server` — serve UI + API on http://127.0.0.1:8787
+- `npm test` — node:test suite (reducer unit tests + in-process pi SDK
+  integration tests; the latter need ~/.pi/agent configured but no network)
 - `npm run dev -w web` — Vite dev server on :5173 (proxies /api and /ws)
-- Env: `PORT`, `HOST`, `DEVIN_BIN`, `DEVIN_WEB_DATA`, `DEVIN_WEB_TOKEN` (optional bearer token for /api+/ws; share URL as `?token=`), `DEVIN_WEB_ORIGINS` (extra allowed WS origins)
+- Env: `PORT`, `HOST`, `DEVIN_BIN`, `DEVIN_WEB_DATA`, `DEVIN_WEB_TOKEN` (optional bearer token for /api+/ws; share URL as `?token=`), `DEVIN_WEB_ORIGINS` (extra allowed WS origins), `MAX_ATTACHED_SESSIONS` (per-hub attach cap, default 10 — coldest idle attach is evicted), `IDLE_DETACH_MS`, `TURN_STALL_MS`
 
 ## Multi-agent
 
 - One `AcpClient` + `SessionHub` per agent (registry in `server/src/agents.js`);
   `DEVIN_WEB_AGENTS` selects/enables them (comma list, default `devin,pi`,
   first = primary, owns the shared workspace list in `state.json`).
-- `pi` uses the `pi-acp` adapter (`PI_ACP_BIN` overrides its path) and gets
-  `state.pi.json`; devin-only behaviour (sqlite mirror, locks, fork/revert,
-  prompt_history) is gated on `devinExt`.
+- `pi` runs in-process via the `@earendil-works/pi-coding-agent` SDK
+  (`server/src/pi-sdk/`: `PiSdkClient` — an `AcpClient` lookalike — drives a
+  vendored pi-acp `PiAcpAgent` backed by SDK `AgentSession`s, so multiple pi
+  sessions run concurrently) and gets `state.pi.json`; devin-only behaviour
+  (sqlite mirror, locks, fork/revert, prompt_history) is gated on
+  `devinExt`.
 - Sessions carry an `agent` tag; the server routes by id (UUID → pi).
   `GET /api/agents` advertises `{id, name, caps}`; `caps.fork` hides the
   per-message fork button.

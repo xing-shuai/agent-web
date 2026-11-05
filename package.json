@@ -7,7 +7,8 @@
     "dev": "npm run dev -w server & npm run dev -w web",
     "server": "npm run start -w server",
     "build": "npm run build -w web",
-    "start": "npm run start -w server"
+    "start": "npm run start -w server",
+    "test": "npm test -w server"
   },
   "workspaces": [
     "server",

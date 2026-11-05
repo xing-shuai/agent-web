@@ -6,9 +6,12 @@ import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import { AcpClient } from "./acp-client.js";
+import { PiSdkClient } from "./pi-sdk/pi-sdk-client.js";
 import { SessionHub } from "./sessions.js";
 import { buildAgents } from "./agents.js";
+import { VERSION as PI_SDK_VERSION } from "@earendil-works/pi-coding-agent";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..", "..");
@@ -17,18 +20,34 @@ const DATA_DIR = process.env.DEVIN_WEB_DATA || path.join(ROOT, "server", "data")
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || "127.0.0.1";
 
+// pi extensions now run inside this process — a stray unhandled rejection
+// would crash the whole server on Node 22 (default --unhandled-rejections=throw).
+process.on("unhandledRejection", (e) => console.error("[devin-web] unhandledRejection", e));
+// Same for a synchronous throw inside an extension or event callback: log
+// loudly and keep going — the alternative is losing every session on a
+// single bad extension.
+process.on("uncaughtException", (e) => console.error("[devin-web] uncaughtException", e));
+
+// Event-loop lag for /api/health — in-process pi sessions make stalls
+// user-visible, so keep a live histogram.
+const loopDelay = monitorEventLoopDelay();
+loopDelay.enable();
+
 // One ACP client + SessionHub per enabled agent (DEVIN_WEB_AGENTS). The
 // first entry is primary: it owns the shared workspace list in state.json;
 // every other agent persists its own metadata in state.<id>.json.
 const agents = buildAgents();
 const hubs = new Map();
 for (const a of agents) {
-  const acp = new AcpClient({
-    bin: a.bin,
-    args: a.args,
-    label: `${a.id} acp`,
-    initMeta: a.initMeta,
-  });
+  const acp =
+    a.transport === "sdk"
+      ? new PiSdkClient({ label: `${a.id} sdk`, initMeta: a.initMeta })
+      : new AcpClient({
+          bin: a.bin,
+          args: a.args,
+          label: `${a.id} acp`,
+          initMeta: a.initMeta,
+        });
   const statePath = path.join(
     DATA_DIR,
     a.devinExt ? "state.json" : `state.${a.id}.json`
@@ -51,7 +70,7 @@ function hubFor(sessionId) {
 }
 
 const app = express();
-app.use(express.json({ limit: "50mb" }));
+app.use(express.json({ limit: "10mb" }));
 
 // Optional bearer token — set DEVIN_WEB_TOKEN to require it on /api and /ws
 // (share the URL as http://host:port/?token=XXX when exposing beyond local).
@@ -87,7 +106,22 @@ const expandHome = (p) => (p === "~" || p?.startsWith("~/") ? path.join(os.homed
 app.get("/api/health", (_req, res) => {
   const agents = {};
   for (const [id, h] of hubs) agents[id] = h.status();
-  res.json({ ok: true, agents });
+  const mem = process.memoryUsage();
+  const health = {
+    ok: true,
+    agents,
+    uptimeSec: Math.round(process.uptime()),
+    memory: {
+      rssMb: Math.round(mem.rss / 1048576),
+      heapUsedMb: Math.round(mem.heapUsed / 1048576),
+    },
+    eventLoopLagMs: {
+      mean: +(loopDelay.mean / 1e6).toFixed(1),
+      p99: +(loopDelay.percentile(99) / 1e6).toFixed(1),
+    },
+  };
+  loopDelay.reset();
+  res.json(health);
 });
 
 app.get("/api/agents", (_req, res) => {
@@ -296,6 +330,14 @@ app.get("/api/account/usage", async (_req, res) => {
   res.json(data);
 });
 
+// /api/fs/* exposes the host filesystem. With no token configured, a
+// remote browser could browse arbitrary paths — restrict it to loopback
+// clients in that case (loopback is all a 127.0.0.1 bind sees anyway).
+const LOOPBACK_IPS = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
+app.use("/api/fs", (req, res, next) => {
+  if (AUTH_TOKEN || LOOPBACK_IPS.has(req.ip)) return next();
+  res.status(403).json({ error: "filesystem API requires loopback or DEVIN_WEB_TOKEN" });
+});
 // ---------- filesystem browsing (workspace picker) ----------
 app.get("/api/fs/browse", (req, res) => {
   try {
@@ -793,8 +835,39 @@ setInterval(() => {
   }
 }, 30000);
 
+// Listen failures (e.g. port in use) surface as an async 'error' event —
+// ws forwards them onto wss too, and an 'error' event with no listener
+// becomes an uncaughtException that our trap above would swallow, leaving
+// a serving-nothing process behind. Exit explicitly instead.
+for (const target of [server, wss]) {
+  target.on("error", (e) => {
+    console.error(`[devin-web] server error (${HOST}:${PORT}):`, e.message);
+    process.exit(1);
+  });
+}
 server.listen(PORT, HOST, () => {
   console.log(`devin-web server listening on http://${HOST}:${PORT}`);
+  if (!AUTH_TOKEN && !["127.0.0.1", "::1", "localhost"].includes(HOST)) {
+    console.warn(
+      `[devin-web] WARNING: listening on ${HOST} without DEVIN_WEB_TOKEN — ` +
+      `anyone who can reach this port can create/prompt sessions. ` +
+      `(/api/fs is loopback-only; set DEVIN_WEB_TOKEN for real auth.)`
+    );
+  }
+  if (hubs.has("pi")) {
+    // The in-process SDK and the pi CLI share ~/.pi/agent — warn early if
+    // they drift apart (session jsonl/extensions may not round-trip).
+    execFile("pi", ["--version"], { timeout: 10_000 }, (e, stdout) => {
+      if (e) return; // no CLI on PATH — the SDK works without it
+      const m = String(stdout).match(/(\d+\.\d+\.\d+)/);
+      const cliV = m?.[1];
+      if (cliV && cliV !== PI_SDK_VERSION)
+        console.warn(
+          `[devin-web] pi CLI v${cliV} ≠ bundled SDK v${PI_SDK_VERSION} — ` +
+          `session/config formats may drift; consider aligning versions`
+        );
+    });
+  }
   // pi-ask is installed by pi's own package manager — an upgrade silently
   // wipes our ask_user patch. Re-apply on every boot; the script is
   // idempotent, so this is a cheap marker check when already patched.
@@ -814,9 +887,27 @@ server.listen(PORT, HOST, () => {
   for (const h of hubs.values()) h.listSessions(undefined, { fresh: true }).catch(() => {});
 });
 
+let shuttingDown = false;
 for (const sig of ["SIGINT", "SIGTERM"]) {
   process.on(sig, () => {
-    for (const h of hubs.values()) h.acp.kill();
-    process.exit(0);
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[devin-web] ${sig} — shutting down`);
+    // Tell browsers so they can show a banner instead of a dead socket.
+    for (const ws of wss.clients) {
+      try {
+        ws.send(JSON.stringify({ type: "server_shutdown" }));
+      } catch {
+      }
+    }
+    // Give sessions a moment to abort + dispose (pi SDK teardown is async);
+    // hard-exit if teardown wedges.
+    const deadline = setTimeout(() => process.exit(0), 4_000);
+    Promise.allSettled(
+      [...hubs.values()].map((h) => Promise.resolve(h.acp.kill()))
+    ).then(() => {
+      clearTimeout(deadline);
+      process.exit(0);
+    });
   });
 }

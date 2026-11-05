@@ -28,11 +28,15 @@ const ATTACH_TIMEOUT_MS = 20_000;
 // Sessions we hold but nobody interacts with get released after this idle
 // window — a held session only costs acp memory; the transcript is in sqlite.
 const IDLE_DETACH_MS = Number(process.env.IDLE_DETACH_MS || 30 * 60 * 1000);
-// pi-acp's session/load KILLS the session's live process and spawns a fresh
-// one — it is a restart, not an attach. A turn producing zero events for
-// this long is presumed orphaned (proc replaced externally or died), so we
-// stop treating it as in-flight and allow reattach again.
+// pi's session/load disposes the session's live AgentSession and creates a
+// fresh one — it is a restart, not an attach. A turn producing zero events
+// for this long is presumed orphaned (session replaced externally or died),
+// so we stop treating it as in-flight and allow reattach again.
 const TURN_STALL_MS = Number(process.env.TURN_STALL_MS || 10 * 60 * 1000);
+// Cap on attached sessions per hub: each attachment holds an agent-side
+// session (in-process pi AgentSessions consume this server's heap), so
+// past the cap the coldest idle attachment is evicted.
+const MAX_ATTACHED_SESSIONS = Number(process.env.MAX_ATTACHED_SESSIONS || 10);
 // Memory/state hygiene: cold session entries (unsubscribed, unattached) are
 // swept after this idle window — all their fields rebuild from sqlite/state.
 const ENTRY_EVICT_MS = 30 * 60 * 1000;
@@ -340,10 +344,10 @@ export class SessionHub extends EventEmitter {
         this.closeSession(s.id).catch(() => {});
       }
       // Dead-proc watchdog: a prompt that produced no events for
-      // TURN_STALL_MS is orphaned — the agent process was replaced or
-      // killed externally (pi-acp restarts a session on every session/load,
-      // and closeAllExcept kills siblings on any other session's load/new).
-      // Free the flag so the UI stops spinning and reattach is allowed.
+      // TURN_STALL_MS is orphaned — the agent session was replaced or
+      // died externally (pi restarts a session's AgentSession on every
+      // session/load). Free the flag so the UI stops spinning and reattach
+      // is allowed.
       if (
         s.prompting > 0 &&
         s.pendingPermissions.size === 0 &&
@@ -371,8 +375,31 @@ export class SessionHub extends EventEmitter {
         this.imgCache.delete(s.id);
       }
     }
-    // pi's list is a ~2.5s filesystem walk that queues on the same stdio
-    // pipe as session/load — don't grind it every 8s when nothing changed.
+    // Attach cap: beyond it, evict the coldest idle attachments so an
+    // abandoned attach can't grow agent-side memory forever. Unsubscribed
+    // sessions go first — detaching one nobody watches is invisible; the
+    // next subscribe just re-attaches it.
+    const attachable = [...this.sessions.values()].filter(
+      (s) =>
+        s.attached &&
+        !s.prompting &&
+        !s.attaching &&
+        s.pendingPermissions.size === 0 &&
+        s.pendingElicitations.size === 0
+    );
+    if (attachable.length > MAX_ATTACHED_SESSIONS) {
+      attachable.sort(
+        (a, b) =>
+          Number(a.subscribers.size > 0) - Number(b.subscribers.size > 0) ||
+          (a.lastActiveAt || 0) - (b.lastActiveAt || 0)
+      );
+      for (const s of attachable.slice(0, attachable.length - MAX_ATTACHED_SESSIONS)) {
+        console.log(`[devin-web] evicting attached session ${s.id} (cap ${MAX_ATTACHED_SESSIONS})`);
+        this.closeSession(s.id).catch(() => {});
+      }
+    }
+    // pi's list is a filesystem walk over ~/.pi/agent sessions — don't
+    // grind it every 8s when nothing changed.
     const cacheStale = !this._listCache || Date.now() - this._listCache.at > 30_000;
     const list =
       this.devinExt || cacheStale
@@ -548,10 +575,10 @@ export class SessionHub extends EventEmitter {
     const s = this.#entry(sessionId, cwd);
     if (s.attached) return s;
     if (s.attaching) return s.attaching;
-    // pi-acp's session/load closes the session's live process before
-    // spawning a fresh one — a restart, not an attach. Refuse it while a
-    // prompt of ours may still be running on that proc (silent longer than
-    // TURN_STALL_MS means the turn is already dead).
+    // pi's session/load disposes the session's live AgentSession before
+    // creating a fresh one — a restart, not an attach. Refuse it while a
+    // prompt of ours may still be running on that session (silent longer
+    // than TURN_STALL_MS means the turn is already dead).
     if (
       !this.devinExt &&
       s.prompting > 0 &&
@@ -567,25 +594,13 @@ export class SessionHub extends EventEmitter {
     const loadReq = this.acp.request("session/load", { sessionId, cwd: s.cwd, mcpServers: [] });
     const onLoaded = (res) => {
         s.attached = true;
-        // A fresh proc cannot carry our previous in-flight prompt — clear
-        // any ghost so the queue can drain and the UI stops spinning.
+        // A fresh agent-side session cannot carry our previous in-flight
+        // prompt — clear any ghost so the queue can drain and the UI stops
+        // spinning.
         s.prompting = 0;
         s.attachWanted = false;
         s.lastActiveAt = Date.now();
         s.attaching = null;
-        if (!this.devinExt) {
-          // pi-acp is single-proc: every session/load closeAllExcept()s the
-          // others. Those procs are already dead — mark them detached so
-          // their entries don't prompt into a void.
-          for (const o of this.sessions.values()) {
-            if (o !== s && o.attached) {
-              o.attached = false;
-              this.#releaseTurn(o);
-              this.#broadcast(o.id, { type: "session_detached", sessionId: o.id }, { global: true });
-              this.#broadcast(o.id, { type: "session_state", sessionId: o.id, state: "free" }, { global: true });
-            }
-          }
-        }
         // Transcript is being replaced (mirror → live replay): bump gen so
         // clients reset, swap in the buffered replay, drop mirror state.
         s.gen++;
@@ -639,7 +654,7 @@ export class SessionHub extends EventEmitter {
         this.#broadcast(sessionId, { type: "session_attached", sessionId }, { global: true });
         this.#broadcast(sessionId, { type: "session_state", sessionId, state: "held" }, { global: true });
         // Resume parked prompts — the ghost turn that held them is gone now
-        // that a fresh proc is attached.
+        // that a fresh agent-side session is attached.
         if (!s.prompting && s.queue.length) this.#drainQueue(s);
         return s;
       };
@@ -678,15 +693,6 @@ export class SessionHub extends EventEmitter {
   }
 
   async createSession(cwd) {
-    // pi-acp closeAllExcept()s every other session's proc on session/new —
-    // refuse while a sibling turn may still be running on its proc.
-    if (!this.devinExt) {
-      const now = Date.now();
-      for (const o of this.sessions.values()) {
-        if (o.prompting > 0 && now - (o.lastActiveAt || 0) < TURN_STALL_MS)
-          throw new Error("another session is still running — pi can only run one at a time");
-      }
-    }
     const res = await this.acp.request("session/new", { cwd, mcpServers: [] });
     const s = this.#entry(res.sessionId, cwd);
     s.attached = true;
@@ -1253,9 +1259,10 @@ export class SessionHub extends EventEmitter {
     const key = cwd || "";
     const c = this._listCache;
     if (!fresh && c && c.key === key && Date.now() - c.at < LIST_CACHE_MS) return c.data;
-    // pi-acp filters an unscoped list by its last loaded/created session's
-    // cwd (`params.cwd ?? lastSessionCwd`) — an explicit "" defeats that and
-    // means "all". It also pages at 50, so follow nextCursor.
+    // pi's list filters an unscoped request by its last loaded/created
+    // session's cwd (`params.cwd ?? lastSessionCwd`) — an explicit ""
+    // defeats that and means "all". It also pages at 50, so follow
+    // nextCursor.
     const params = cwd ? { cwd } : this.devinExt ? {} : { cwd: "" };
     const sessions = [];
     let cursor;
@@ -1266,8 +1273,8 @@ export class SessionHub extends EventEmitter {
       if (!cursor) break;
     }
     // Tombstones hide sessions whose agent-side delete is still in flight —
-    // otherwise a concurrent poll re-adds the row while pi-acp's walk-based
-    // delete hasn't unlinked the file yet (delete flicker).
+    // otherwise a concurrent poll re-adds the row while the agent's
+    // walk-based delete hasn't unlinked the file yet (delete flicker).
     if (this._tombstones?.size) {
       const now = Date.now();
       for (const [id, exp] of this._tombstones) if (exp <= now) this._tombstones.delete(id);
@@ -1470,9 +1477,9 @@ export class SessionHub extends EventEmitter {
       const res = await this.acp.request("session/prompt", { sessionId, prompt: blocks });
       return res;
     } catch (e) {
-      // pi-acp may have killed this proc via another session's load/new
-      // (closeAllExcept) — the session id is then unknown. Mark it detached
-      // so the poll loop can reattach instead of failing forever.
+      // The session may be gone agent-side (e.g. closed after an idle
+      // detach) — the session id is then unknown. Mark it detached so the
+      // poll loop can reattach instead of failing forever.
       if (s.attached && /unknown session|no such session|not found/i.test(String(e?.message))) {
         s.attached = false;
         s.attachWanted = true;
@@ -1666,7 +1673,7 @@ export class SessionHub extends EventEmitter {
     const del = this.acp.request("session/delete", { sessionId }).catch(() => {
       /* best-effort: still remove locally */
     });
-    // pi-acp's delete does a full session-dir walk (~seconds) — don't hold
+    // pi's delete does a full session-dir walk (~seconds) — don't hold
     // the API on it; re-list once the store has actually settled instead.
     if (this.devinExt) await del;
     else {
@@ -1805,10 +1812,21 @@ export class SessionHub extends EventEmitter {
   }
 
   status() {
+    let prompting = 0;
+    let queued = 0;
+    const attached = [];
+    for (const s of this.sessions.values()) {
+      if (!s.attached) continue;
+      attached.push(s.id);
+      if (s.prompting > 0) prompting++;
+      queued += s.queue.length;
+    }
     return {
       acpReady: this.acp.ready,
       agentInfo: this.acp.agentInfo?.agentInfo,
-      attachedSessions: [...this.sessions.values()].filter((s) => s.attached).map((s) => s.id),
+      attachedSessions: attached,
+      promptingSessions: prompting,
+      queuedPrompts: queued,
     };
   }
 }

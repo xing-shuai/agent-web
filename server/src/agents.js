@@ -1,9 +1,3 @@
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.resolve(__dirname, "..", "..");
 
 // Devin extension flags — these gate which slash commands the agent
 // advertises in available_commands_update.
@@ -16,8 +10,6 @@ const DEVIN_INIT_META = {
   "cognition.ai/revert": true,
   "cognition.ai/revertByUserMessageId": true,
 };
-
-const firstExisting = (paths) => paths.find((p) => fs.existsSync(p));
 
 /** Agent registry: one ACP client + SessionHub per enabled agent.
  *  Enabled set comes from DEVIN_WEB_AGENTS (comma list, default "devin,pi"),
@@ -39,12 +31,9 @@ export function buildAgents() {
     {
       id: "pi",
       name: "Pi",
-      bin:
-        process.env.PI_ACP_BIN ||
-        firstExisting([
-          path.join(ROOT, "node_modules", ".bin", "pi-acp"),
-          path.join(ROOT, "server", "node_modules", ".bin", "pi-acp"),
-        ]),
+      // In-process transport: PiSdkClient + vendored pi-acp agent on top of
+      // the pi SDK — no subprocess, sessions run concurrently.
+      transport: "sdk",
       args: [],
       initMeta: {},
       devinExt: false,
@@ -58,7 +47,7 @@ export function buildAgents() {
   const out = [];
   for (const id of enabled) {
     const a = all.find((x) => x.id === id);
-    if (!a || !a.bin) continue;
+    if (!a || (a.transport !== "sdk" && !a.bin)) continue;
     out.push(a);
   }
   return out;
