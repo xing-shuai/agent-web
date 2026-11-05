@@ -351,6 +351,14 @@ export default function App() {
         } else if (m.method?.endsWith("turn_stalled")) {
           patchSession(sid, { running: false });
           setBanner("该会话长时间无响应——上一轮可能已中断，可直接重新发送");
+        } else if (m.method === "pi/extension_notify") {
+          // Transient extension notices (e.g. remote-pi status) → toast,
+          // kept out of the transcript.
+          const lvl = m.params?.level;
+          setToast({
+            text: m.params?.text ?? "",
+            kind: lvl === "error" ? "err" : lvl === "warning" ? "warn" : "",
+          });
         }
       }),
       wsClient.on("session_deleted", (m) => {

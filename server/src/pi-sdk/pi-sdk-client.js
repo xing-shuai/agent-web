@@ -36,7 +36,9 @@ export class PiSdkClient extends EventEmitter {
       .then(() => {
         // Minimal AgentSideConnection stand-in: only the methods the
         // vendored agent calls (sessionUpdate, requestPermission,
-        // unstable_createElicitation).
+        // unstable_createElicitation) plus a devin-web `notify` channel —
+        // extension ui.notify is routed here so transient notices reach the
+        // UI as toasts instead of polluting the transcript.
         const conn = {
           sessionUpdate: async (params) => {
             this.emit("sessionUpdate", params?.sessionId, params?.update, params);
@@ -44,6 +46,7 @@ export class PiSdkClient extends EventEmitter {
           requestPermission: (params) => this.#agentRequest("session/request_permission", params),
           unstable_createElicitation: (params) =>
             this.#agentRequest("elicitation/create", params),
+          notify: (params) => this.emit("notification", "pi/extension_notify", params),
         };
         this.agent = new PiAcpAgent(conn);
         return this.#dispatch("initialize", {

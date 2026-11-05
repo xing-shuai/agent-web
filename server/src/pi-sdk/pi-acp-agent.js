@@ -1073,11 +1073,23 @@ var PiAcpSession = class {
       return;
     }
     if (method === "notify") {
-      this.emit({
-        sessionUpdate: "agent_message_chunk",
-        content: { type: "text", text: stringProp(ev, "message") ?? "Pi notification" },
-        _meta: { piAcp: { notify: { level: stringProp(ev, "notifyType") ?? "info" } } }
-      });
+      // devin-web: extension ui.notify is a transient notice — route it to
+      // the client as a toast (agent_notification), not a permanent
+      // transcript bubble. e.g. remote-pi's relay/mesh status chatter
+      // fired on every session load and polluted history.
+      if (typeof this.conn.notify === "function") {
+        this.conn.notify({
+          sessionId: this.sessionId,
+          level: stringProp(ev, "notifyType") ?? "info",
+          text: stringProp(ev, "message") ?? "Pi notification"
+        });
+      } else {
+        this.emit({
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: stringProp(ev, "message") ?? "Pi notification" },
+          _meta: { piAcp: { notify: { level: stringProp(ev, "notifyType") ?? "info" } } }
+        });
+      }
       await this.proc.sendExtensionUiResponse({ id, cancelled: true });
       return;
     }
