@@ -4,11 +4,11 @@ Devin / Pi agent 的 Web 界面：一个本地 Node 协调器把 `devin acp`（A
 
 ## 效果展示
 
-> 示意图（按真实界面风格绘制，非截图）
+![桌面端：侧边栏 + 会话窗格](docs/screenshots/desktop.png)
 
-![桌面端：侧边栏 + 对话窗格 + 终端](docs/screenshots/desktop.svg)
+![快速对话：居中模态框（Ctrl+Shift+Space，自动创建临时工作目录）](docs/screenshots/quick-chat.png)
 
-![快速对话：居中模态框](docs/screenshots/quick-chat.svg)
+![每个窗格可开工作区终端](docs/screenshots/terminal.png)
 
 ## 功能特性
 
