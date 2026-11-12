@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="760" viewBox="0 0 1180 760" font-family="-apple-system,'Segoe UI',Roboto,'Noto Sans SC',sans-serif">
+  <defs>
+    <clipPath id="win"><rect x="0" y="0" width="1180" height="760" rx="12"/></clipPath>
+    <style>
+      .t1{fill:#dbe2ec}.t2{fill:#8b96a5}.t3{fill:#5c6878}
+      .acc{fill:#6d9bf5}.grn{fill:#4ec98f}.amb{fill:#e8b647}.red{fill:#e5625c}.pur{fill:#a78bfa}
+      .mono{font-family:'SF Mono',ui-monospace,Menlo,Consolas,monospace}
+      .s11{font-size:11px}.s12{font-size:12px}.s13{font-size:13px}.s14{font-size:14px}.s15{font-size:15px}
+      .b{font-weight:600}
+    </style>
+  </defs>
+  <g clip-path="url(#win)">
+    <rect width="1180" height="760" fill="#0b0e13"/>
+    <!-- title bar -->
+    <rect width="1180" height="38" fill="#0d1117"/>
+    <circle cx="20" cy="19" r="5.5" fill="#e5625c"/><circle cx="38" cy="19" r="5.5" fill="#e8b647"/><circle cx="56" cy="19" r="5.5" fill="#4ec98f"/>
+    <text x="590" y="24" text-anchor="middle" class="t3 s12">Agent Web — 127.0.0.1:8787</text>
+
+    <!-- ===== sidebar ===== -->
+    <rect y="38" width="248" height="722" fill="#0e1218"/>
+    <line x1="248" y1="38" x2="248" y2="760" stroke="#1d2430"/>
+    <text x="18" y="66" class="t1 s14 b">会话</text>
+    <rect x="152" y="52" width="84" height="22" rx="11" fill="#161c26"/>
+    <circle cx="164" cy="63" r="3" class="grn"/><text x="172" y="67" class="t2 s11">本机环境</text>
+    <!-- workspace group -->
+    <text x="18" y="96" class="t2 s12">▾ devin_web</text>
+    <text x="226" y="96" text-anchor="end" class="t3 s12">＋</text>
+    <!-- session rows -->
+    <rect x="10" y="104" width="228" height="26" rx="6" fill="#1a2230"/>
+    <circle cx="24" cy="117" r="3.5" class="acc"/><text x="36" y="121" class="t1 s12">重构历史折叠为线性复杂度</text>
+    <circle cx="24" cy="145" r="3.5" class="grn"/><text x="36" y="149" class="t2 s12">修复终端闪烁问题</text>
+    <circle cx="24" cy="171" r="3.5" class="t3"/><text x="36" y="175" class="t2 s12">SSH 远程主机联调</text>
+    <circle cx="24" cy="197" r="3.5" class="amb"/><text x="36" y="201" class="t2 s12">预览弹窗 UX 改进</text>
+    <!-- scratch group -->
+    <text x="18" y="232" class="t3 s12">▸ 临时对话</text>
+    <!-- bottom quick chat button -->
+    <rect x="10" y="716" width="228" height="32" rx="8" fill="#131926"/>
+    <circle cx="26" cy="732" r="4" class="acc"/>
+    <text x="38" y="736" class="t1 s12">快速对话</text>
+    <text x="222" y="736" text-anchor="end" class="t3 s11 mono">⌃⇧Space</text>
+
+    <!-- ===== chat pane ===== -->
+    <rect x="248" y="38" width="640" height="722" fill="#0f1319"/>
+    <!-- pane header -->
+    <rect x="248" y="38" width="640" height="42" fill="#0d1117"/>
+    <circle cx="268" cy="59" r="3.5" class="acc"/>
+    <text x="278" y="63" class="t1 s13 b">重构历史折叠为线性复杂度</text>
+    <text x="470" y="63" class="t3 s11 mono">devin · ~/code/devin_web</text>
+    <rect x="700" y="52" width="120" height="14" rx="7" fill="#161c26"/>
+    <text x="760" y="62" text-anchor="middle" class="t2 s11 mono">~42.7 tok/s</text>
+    <line x1="248" y1="80" x2="888" y2="80" stroke="#1d2430"/>
+    <!-- user bubble -->
+    <rect x="560" y="96" width="308" height="44" rx="12" fill="#1c2b45"/>
+    <text x="576" y="114" class="t1 s12">把 foldEvents 改成线性复杂度，</text>
+    <text x="576" y="131" class="t1 s12">8.6 万条事件要能秒开</text>
+    <!-- agent message -->
+    <circle cx="276" cy="164" r="9" fill="#1d2430"/><text x="276" y="168" text-anchor="middle" class="acc s11 b">A</text>
+    <text x="294" y="152" class="t1 s13">已完成。fold 改用可变数组 + toolCallId 索引：</text>
+    <text x="294" y="171" class="t2 s12">回放复杂度从超线性降到线性，实测 85.8k 事件：</text>
+    <!-- metrics chips -->
+    <rect x="294" y="182" width="132" height="24" rx="6" fill="#131926"/>
+    <text x="304" y="198" class="t3 s11 mono">之前 411ms</text>
+    <text x="436" y="198" class="acc s12">→</text>
+    <rect x="452" y="182" width="120" height="24" rx="6" fill="#13251e"/>
+    <text x="462" y="198" class="grn s11 mono">现在 47ms</text>
+    <!-- code block -->
+    <rect x="294" y="216" width="560" height="120" rx="8" fill="#0a0d12" stroke="#1d2430"/>
+    <rect x="294" y="216" width="560" height="24" rx="8" fill="#11161e"/>
+    <text x="308" y="232" class="t3 s11 mono">sessionReducer.js · diff</text>
+    <text x="842" y="232" text-anchor="end" class="t3 s11">复制</text>
+    <text x="308" y="258" class="mono s11"><tspan class="red">-</tspan><tspan class="t2">  const items = [...st.items];</tspan></text>
+    <text x="308" y="275" class="mono s11"><tspan class="grn">+</tspan><tspan class="t2">  </tspan><tspan class="acc">const</tspan><tspan class="t2"> fold = { items: st.items.slice(),</tspan></text>
+    <text x="308" y="292" class="mono s11"><tspan class="grn">+</tspan><tspan class="t2">            toolIx: </tspan><tspan class="acc">new</tspan><tspan class="t2"> Map() };</tspan></text>
+    <text x="308" y="309" class="mono s11"><tspan class="t2">    ev.kind === </tspan><tspan class="amb">"tool_call"</tspan></text>
+    <text x="308" y="326" class="mono s11"><tspan class="t2">      ? updateTool(fold, ev)</tspan></text>
+    <!-- tool card -->
+    <rect x="294" y="348" width="560" height="34" rx="8" fill="#11161e" stroke="#1d2430"/>
+    <text x="308" y="370" class="t3 s12">▸</text>
+    <rect x="322" y="356" width="44" height="18" rx="4" fill="#1d2430"/>
+    <text x="344" y="369" text-anchor="middle" class="t2 s11 mono">bash</text>
+    <text x="376" y="370" class="t2 s12 mono">npm test</text>
+    <circle cx="556" cy="365" r="4" class="grn"/>
+    <text x="568" y="369" class="grn s12">135/135 通过</text>
+    <text x="842" y="369" text-anchor="end" class="t3 s11">1.2s</text>
+    <!-- streaming text + caret -->
+    <text x="294" y="412" class="t1 s13">正在验证长会话的首次加载耗时</text>
+    <rect x="470" y="402" width="8" height="15" class="acc"/>
+    <!-- nav rail -->
+    <g class="t3">
+      <rect x="878" y="120" width="4" height="16" rx="2" fill="#2a3342"/><rect x="878" y="168" width="4" height="10" rx="2" fill="#2a3342"/>
+      <rect x="878" y="252" width="4" height="22" rx="2" fill="#3b4a61"/>
+      <rect x="878" y="360" width="4" height="8" rx="2" fill="#6d9bf5"/>
+    </g>
+    <!-- composer -->
+    <rect x="262" y="700" width="612" height="46" rx="12" fill="#131926" stroke="#242e3f"/>
+    <text x="280" y="728" class="t3 s13">给 Devin 发消息…</text>
+    <circle cx="846" cy="723" r="14" fill="#24304a"/><text x="846" y="728" text-anchor="middle" class="acc s13">↑</text>
+
+    <!-- ===== terminal pane ===== -->
+    <line x1="888" y1="38" x2="888" y2="760" stroke="#1d2430"/>
+    <rect x="888" y="38" width="292" height="42" fill="#0d1117"/>
+    <text x="904" y="63" class="t1 s13 b">终端</text>
+    <text x="940" y="63" class="t3 s11 mono">~/code/devin_web</text>
+    <text x="1166" y="63" text-anchor="end" class="t3 s12">− □ ×</text>
+    <rect x="888" y="80" width="292" height="680" fill="#07090d"/>
+    <text x="904" y="110" class="mono s12"><tspan class="grn">xingshuai@dev</tspan><tspan class="t3">:</tspan><tspan class="acc">~/code/devin_web</tspan><tspan class="t2">$ npm test</tspan></text>
+    <text x="904" y="132" class="mono s11 t2"># tests 135</text>
+    <text x="904" y="150" class="mono s11 grn"># pass 135</text>
+    <text x="904" y="168" class="mono s11 t2"># fail 0</text>
+    <text x="904" y="196" class="mono s12"><tspan class="grn">xingshuai@dev</tspan><tspan class="t3">:</tspan><tspan class="acc">~/code/devin_web</tspan><tspan class="t2">$ git log -1</tspan></text>
+    <text x="904" y="216" class="mono s11 t2"><tspan class="amb">313a81d</tspan> 性能优化 + 快速对话</text>
+    <text x="904" y="244" class="mono s12"><tspan class="grn">xingshuai@dev</tspan><tspan class="t3">:</tspan><tspan class="acc">~/code/devin_web</tspan><tspan class="t2">$ </tspan></text>
+    <rect x="1046" y="233" width="8" height="14" class="t2"/>
+  </g>
+</svg>
