@@ -7,3 +7,4 @@ android/local.properties
 wechat_*.png
 server/data/*.json
 server/.pi/
+web/dist/
