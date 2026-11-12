@@ -1,6 +1,16 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useId, useRef, useState } from "react";
 import { ChevronUp, SlidersHorizontal } from "lucide-react";
+import { useLayer } from "../layers.js";
 import NiceSelect, { firstWord } from "./NiceSelect.jsx";
+import { t } from "../i18n.js";
+
+export function modelOption(option) {
+  const full = String(option.name || option.value || "");
+  const qualified = full.match(/^([^\s/]+)\/(.+)$/);
+  const provider = qualified?.[1] || String(option.value || "").match(/^([^\s/]+)\/.+$/)?.[1];
+  return { ...option, name: qualified?.[2] || full, title: full, provider,
+    description: [provider, option.description].filter(Boolean).join(" · ") };
+}
 
 /**
  * One popover for the secondary config selects (model / thinking / speed…).
@@ -10,32 +20,21 @@ import NiceSelect, { firstWord } from "./NiceSelect.jsx";
 export default function ConfigMenu({ selects, onConfig }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
+  const ownerId = useId();
 
-  useEffect(() => {
-    if (!open) return;
-    const close = (e) => {
-      if (!ref.current?.contains(e.target)) setOpen(false);
-    };
-    const esc = (e) => e.key === "Escape" && setOpen(false);
-    document.addEventListener("mousedown", close);
-    document.addEventListener("keydown", esc);
-    return () => {
-      document.removeEventListener("mousedown", close);
-      document.removeEventListener("keydown", esc);
-    };
-  }, [open]);
+  useLayer({ open, ref, onClose: () => setOpen(false), initialFocus: false });
 
   if (!selects?.length) return null;
 
   const current = (s) => s.options?.find((o) => o.value === s.currentValue)?.name || s.currentValue;
-  const primary =
-    selects.find((s) => /model|模型/i.test(s.id + (s.name || ""))) || selects[0];
+  const isModel = (s) => s.category === "model" || /model|模型/i.test(s.id + (s.name || ""));
+  const primary = selects.find(isModel) || selects[0];
 
   return (
     <div className="cfg-pop" ref={ref}>
-      <button className="cfg-trigger" onClick={() => setOpen((o) => !o)} title="模型与运行选项">
+      <button className="cfg-trigger" type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} title={t("模型与运行选项：{v0}", { v0: current(primary) })}>
         <SlidersHorizontal size={13} />
-        <span className="cfg-label">{current(primary)}</span>
+        <span className="cfg-label">{isModel(primary) ? modelOption({ name: current(primary) }).name : current(primary)}</span>
         <ChevronUp size={12} className={open ? "" : "flip"} />
       </button>
       {open && (
@@ -46,10 +45,12 @@ export default function ConfigMenu({ selects, onConfig }) {
                 {s.name || s.id}
               </span>
               <NiceSelect
-                options={s.options}
+                options={isModel(s) ? s.options.map(modelOption) : s.options}
                 value={s.currentValue}
+                portal portalOwner={ownerId} label={isModel(s) ? t("模型") : s.name || s.id}
+                searchable={isModel(s) ? true : undefined}
                 onChange={(v) => onConfig(s.id, v)}
-                groupBy={s.options?.length > 16 ? firstWord : null}
+                groupBy={s.options?.length > 16 ? (isModel(s) ? (option) => option.provider || t("其他") : firstWord) : null}
               />
             </div>
           ))}

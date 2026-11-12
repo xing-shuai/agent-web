@@ -2,6 +2,9 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
+    <!-- Report scripts run only in opaque, sandboxed Blob frames. Disallow
+         their navigation to network origins (including credential beacons). -->
+    <meta http-equiv="Content-Security-Policy" content="frame-src blob:; object-src 'none'" />
     <meta
       name="viewport"
       content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
@@ -14,8 +17,8 @@
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
     <link rel="apple-touch-icon" href="/icon-192.png" />
     <title>Agent Web</title>
-    <script type="module" crossorigin src="/assets/index-DzQZyA0A.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-B956er62.css">
+    <script type="module" crossorigin src="/assets/index-rUipMg7W.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-CFvbILLt.css">
   </head>
   <body>
     <div id="root"></div>

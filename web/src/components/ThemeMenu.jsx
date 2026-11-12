@@ -1,12 +1,14 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useRef, useState } from "react";
+import { useLayer } from "../layers.js";
 import { createPortal } from "react-dom";
 import { Palette, Monitor, Sun, Moon, Check } from "lucide-react";
 import { getPref, setPref, getScheme, setScheme, SCHEMES } from "../theme.js";
+import { t } from "../i18n.js";
 
 const THEME_OPTS = [
-  { id: "system", name: "跟随系统", Icon: Monitor },
-  { id: "light", name: "浅色", Icon: Sun },
-  { id: "dark", name: "深色", Icon: Moon },
+  { id: "system", name: t("跟随系统"), Icon: Monitor },
+  { id: "light", name: t("浅色"), Icon: Sun },
+  { id: "dark", name: t("深色"), Icon: Moon },
 ];
 
 /** Sidebar footer popover: appearance (light/dark/system) + accent schemes.
@@ -22,20 +24,7 @@ export default function ThemeMenu() {
   const btnRef = useRef(null);
   const panelRef = useRef(null);
 
-  useEffect(() => {
-    if (!open) return;
-    const close = (e) => {
-      if (ref.current?.contains(e.target) || panelRef.current?.contains(e.target)) return;
-      setOpen(false);
-    };
-    const esc = (e) => e.key === "Escape" && setOpen(false);
-    document.addEventListener("mousedown", close);
-    document.addEventListener("keydown", esc);
-    return () => {
-      document.removeEventListener("mousedown", close);
-      document.removeEventListener("keydown", esc);
-    };
-  }, [open]);
+  useLayer({ open, ref: panelRef, triggerRef: btnRef, onClose: () => setOpen(false), initialFocus: false });
 
   const toggle = () => {
     if (!open && btnRef.current) {
@@ -47,13 +36,13 @@ export default function ThemeMenu() {
 
   return (
     <div className="thm" ref={ref}>
-      <button className="icon-ghost" title="外观与主题色" ref={btnRef} onClick={toggle}>
+      <button className="icon-ghost" title={t("外观与主题色")} ref={btnRef} onClick={toggle}>
         <Palette size={15} />
       </button>
       {open &&
         createPortal(
           <div className="thm-panel" ref={panelRef} style={{ bottom }}>
-            <div className="thm-label">外观</div>
+            <div className="thm-label">{t("外观")}</div>
             <div className="thm-row">
               {THEME_OPTS.map(({ id, name, Icon }) => (
                 <button
@@ -69,7 +58,7 @@ export default function ThemeMenu() {
                 </button>
               ))}
             </div>
-            <div className="thm-label">主题色</div>
+            <div className="thm-label">{t("主题色")}</div>
             <div className="thm-swatches">
               {SCHEMES.map((s) => (
                 <button

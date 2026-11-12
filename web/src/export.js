@@ -1,3 +1,4 @@
+import { t } from "./i18n.js";
 // Transcript → Markdown export.
 
 const truncate = (t, n = 4000) => (t && t.length > n ? t.slice(0, n) + "\n…(truncated)" : t || "");
@@ -18,20 +19,29 @@ export function buildMarkdown(items, { title, sessionId, cwd, agent } = {}) {
   for (const it of items || []) {
     switch (it.kind) {
       case "user":
-        out.push(`## 你\n\n${it.text}${it.images?.length ? `\n\n*(+${it.images.length} 张图片)*` : ""}`);
+        out.push(it.images?.length ? t("## 你\n\n{v0}\n\n*(+{v1} 张图片)*", { v0: it.text, v1: it.images.length }) : t("## 你\n\n{v0}", { v0: it.text }));
         break;
       case "agent":
         out.push(`## ${agent || "Devin"}\n\n${it.text}`);
         break;
       case "thought":
-        out.push(`> **思考过程**\n>\n> ${it.text.replace(/\n/g, "\n> ")}`);
+        out.push(t("> **思考过程**\n>\n> {v0}", { v0: it.text.replace(/\n/g, "\n> ") }));
         break;
       case "tool":
         out.push(toolBlock(it));
         break;
+      case "compaction":
+        out.push(t("---\n\n**上下文压缩 · {v0}**{v1}\n\n{v2}", { v0: it.status || "completed", v1: Number.isFinite(it.at) ? ` · ${new Date(it.at).toISOString()}` : "", v2: it.summary || it.error || "" }));
+        break;
+      case "processNotification":
+        out.push(`> **${t("后台任务")} · ${it.name || ""}**\n> ${(it.summary || "").replace(/\n/g, "\n> ")}`);
+        break;
+      case "branchSummary":
+        out.push(t("---\n\n**分支摘要**\n\n{v0}", { v0: it.summary || "" }));
+        break;
       case "plan":
         out.push(
-          "**计划**\n\n" +
+          t("**计划**\n\n") +
             (it.entries || [])
               .map((e) => `- [${e.status === "completed" ? "x" : " "}] ${e.title || e.content || ""}`)
               .join("\n")

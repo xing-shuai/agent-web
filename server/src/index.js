@@ -1,3 +1,10 @@
+import { gzip } from "node:zlib";
+import { filePreviewRoutes } from "./file-preview.js";
+import { HISTORY_ENCODING, HISTORY_ENCODING_V2, HISTORY_COMPRESSION } from "./history-wire.js";
+import { searchTranscripts } from "./transcript-search.js";
+import { devinDbPath } from "./sessions.js";
+import { getPiSessionsDir } from "./pi-sdk/pi-acp-agent.js";
+import { randomUUID } from "node:crypto";
 import express from "express";
 import { WebSocketServer } from "ws";
 import http from "node:http";
@@ -11,6 +18,10 @@ import { AcpClient } from "./acp-client.js";
 import { PiSdkClient } from "./pi-sdk/pi-sdk-client.js";
 import { SessionHub } from "./sessions.js";
 import { buildAgents } from "./agents.js";
+import { TerminalHub, terminalAccess, terminalWebSocketServer } from "./terminals.js";
+import { HostStore, RemoteHosts } from "./remote-hosts.js";
+import { remoteRoutes, remoteWebSocketServer } from "./remote-routes.js";
+import { scratchRoot, createScratchDir, scratchInfo, removeScratchDir } from "./scratch.js";
 import { VERSION as PI_SDK_VERSION } from "@earendil-works/pi-coding-agent";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -19,6 +30,18 @@ const WEB_DIST = path.join(ROOT, "web", "dist");
 const DATA_DIR = process.env.DEVIN_WEB_DATA || path.join(ROOT, "server", "data");
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || "127.0.0.1";
+const WORKER = process.env.DEVIN_WEB_WORKER === "1";
+if (WORKER && (!process.env.DEVIN_WEB_TOKEN || HOST !== "127.0.0.1")) {
+  console.error("remote worker requires a token and loopback binding"); process.exit(1);
+}
+if (WORKER) process.umask(0o077);
+
+// Capture this coordinator-only secret before creating agents. Tool subprocesses
+// must not accidentally inherit it via env/printenv; this is not account isolation.
+let remoteStore = null;
+try { if (!WORKER) remoteStore = new HostStore(path.join(DATA_DIR, "remote-hosts.json")); }
+catch (e) { console.error(`[devin-web] remote configuration: ${e.message}`); process.exit(1); }
+delete process.env.DEVIN_WEB_SSH_MASTER_KEY;
 
 // pi extensions now run inside this process — a stray unhandled rejection
 // would crash the whole server on Node 22 (default --unhandled-rejections=throw).
@@ -71,12 +94,23 @@ function hubFor(sessionId) {
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
+// Do not let Express's default parse-error logger echo password-bearing JSON.
+app.use((error, _req, res, next) => {
+  if (["entity.parse.failed", "entity.too.large"].includes(error.type))
+    return res.status(error.type === "entity.too.large" ? 413 : 400).json({ error: "JSON 请求无效或超过大小限制" });
+  next(error);
+});
 
 // Optional bearer token — set DEVIN_WEB_TOKEN to require it on /api and /ws
 // (share the URL as http://host:port/?token=XXX when exposing beyond local).
 const AUTH_TOKEN = process.env.DEVIN_WEB_TOKEN || "";
+const TERMINAL_ORIGINS = (process.env.DEVIN_WEB_ORIGINS || "").split(",").map((s) => s.trim()).filter(Boolean);
+const terminals = new TerminalHub({
+  workspaces: () => [os.homedir(), ...[...hubs.values()].flatMap((h) => h.workspaces)],
+  maxTerminals: Math.max(1, Math.min(64, Math.floor(Number(process.env.MAX_TERMINALS) || 8))),
+});
 app.use("/api", (req, res, next) => {
-  if (!AUTH_TOKEN || req.path === "/health") return next();
+  if (!AUTH_TOKEN || (!WORKER && req.path === "/health")) return next();
   const t = req.get("x-devin-token") || req.query.token;
   if (t === AUTH_TOKEN) return next();
   res.status(401).json({ error: "unauthorized" });
@@ -101,6 +135,19 @@ app.use("/api", (req, res, next) => {
   next();
 });
 
+let remotes = null;
+if (!WORKER) {
+  try {
+    remotes = new RemoteHosts({ root: ROOT, store: remoteStore });
+    remoteRoutes(app, remotes, { token: AUTH_TOKEN, origins: TERMINAL_ORIGINS });
+  } catch (e) { console.error(`[devin-web] remote configuration: ${e.message}`); process.exit(1); }
+}
+if (WORKER) app.post("/api/worker/stop", (req, res) => {
+  if (req.body.confirm !== true) return res.status(409).json({ error: "confirmation required" });
+  res.json({ ok: true });
+  setTimeout(() => process.emit("SIGTERM"), 100);
+});
+
 const expandHome = (p) => (p === "~" || p?.startsWith("~/") ? path.join(os.homedir(), p.slice(1)) : p);
 
 app.get("/api/health", (_req, res) => {
@@ -109,6 +156,7 @@ app.get("/api/health", (_req, res) => {
   const mem = process.memoryUsage();
   const health = {
     ok: true,
+    ...(WORKER ? { workerProtocol: 1, workerVersion: process.env.DEVIN_WEB_WORKER_VERSION, instanceId: serverInstanceId } : {}),
     agents,
     uptimeSec: Math.round(process.uptime()),
     memory: {
@@ -129,7 +177,7 @@ app.get("/api/agents", (_req, res) => {
 });
 
 app.get("/api/state", (_req, res) => {
-  res.json({ workspaces: hub.workspaces, home: os.homedir(), sessions: hub.state.sessions });
+  res.json({ workspaces: hub.workspaces, home: os.homedir(), sessions: hub.state.sessions, scratch: true });
 });
 
 // ---------- account quota ----------
@@ -410,6 +458,16 @@ app.post("/api/fs/mkdir", (req, res) => {
   }
 });
 
+// ---------- interactive terminals ----------
+// A read-only preflight gives browsers a useful auth/workspace error before
+// opening a WS (whose failed upgrade status browsers deliberately conceal).
+app.get("/api/terminal", (req, res) => {
+  const denied = terminalAccess(req, AUTH_TOKEN, TERMINAL_ORIGINS);
+  if (denied) return res.status(denied.status).json({ error: denied.error });
+  try { res.json(terminals.status(req.query.cwd)); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 // ---------- workspaces ----------
 app.post("/api/workspaces", (req, res) => {
   const dir = path.resolve(expandHome(req.body.path || ""));
@@ -421,6 +479,29 @@ app.post("/api/workspaces", (req, res) => {
 });
 
 // ---------- sessions ----------
+const activeSearches = new Set();
+app.get("/api/sessions/search", async (req, res) => {
+  const q = String(req.query.q || "").trim();
+  if (q.length < 2 || q.length > 200) return res.status(400).json({ error: "搜索词需 2-200 字符" });
+  const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 50));
+  if (activeSearches.size >= 2) return res.status(429).json({ error: "搜索繁忙，请稍后再试" });
+  const cwd = req.query.cwd ? path.resolve(expandHome(req.query.cwd)) : undefined;
+  const settled = await Promise.allSettled([...hubs.values()].map((h) => h.listSessions(cwd)));
+  const sessions = [];
+  settled.forEach((r) => { if (r.status === "fulfilled") sessions.push(...r.value); });
+  sessions.sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
+  const controller = new AbortController();
+  req.on("close", () => controller.abort());
+  const entry = controller;
+  activeSearches.add(entry);
+  try {
+    const result = await searchTranscripts({ q, sessions, devinDbPath: devinDbPath(),
+      piSessionsDir: getPiSessionsDir(), limit, signal: controller.signal });
+    res.json(result);
+  } finally {
+    activeSearches.delete(entry);
+  }
+});
 app.get("/api/sessions", async (req, res) => {
   const cwd = req.query.cwd ? path.resolve(expandHome(req.query.cwd)) : undefined;
   const settled = await Promise.allSettled([...hubs.values()].map((h) => h.listSessions(cwd)));
@@ -441,23 +522,69 @@ app.get("/api/sessions", async (req, res) => {
 
 app.post("/api/sessions", async (req, res) => {
   try {
-    const cwd = path.resolve(expandHome(req.body.cwd || ""));
-    if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
-      return res.status(400).json({ error: `not a directory: ${cwd}` });
-    }
+    const scratch = req.body.scratch === true;
     const agentId = req.body.agent || primary?.id;
     const h = hubs.get(agentId);
     if (!h) return res.status(400).json({ error: `unknown agent: ${agentId}` });
-    const created = await h.createSession(cwd);
+    let dir = null;
+    let cwd = null;
+    if (scratch) dir = cwd = createScratchDir(scratchRoot());
+    else {
+      cwd = path.resolve(expandHome(req.body.cwd || ""));
+      if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
+        return res.status(400).json({ error: `not a directory: ${cwd}` });
+      }
+    }
+    let created;
+    try {
+      created = await h.createSession(cwd, { scratch });
+    } catch (e) {
+      if (dir) fs.rmSync(dir, { recursive: true, force: true }); // just-created, still empty
+      throw e;
+    }
     // Workspaces are shared and owned by the primary hub — a non-primary
-    // hub's own addWorkspace only writes its private state file.
-    if (h !== hub) hub.addWorkspace(cwd);
+    // hub's own addWorkspace only writes its private state file. Scratch
+    // dirs are per-chat temporaries and never join the workspace list.
+    if (!scratch && h !== hub) hub.addWorkspace(cwd);
     // pi injects the new row into its list cache (the session file doesn't
     // exist yet); devin's list is cheap to rebuild.
     if (h.devinExt) h.listCacheInvalidate();
-    res.json(created);
+    res.json(scratch ? { ...created, cwd: dir, scratch: true } : created);
   } catch (e) {
-    res.status(502).json({ error: e.message });
+    res.status(e.status || 502).json({ error: e.message, code: e.code });
+  }
+});
+
+app.get("/api/sessions/:id/scratch", (req, res) => {
+  const h = hubFor(req.params.id);
+  if (!h.isScratch(req.params.id)) return res.status(404).json({ error: "not a scratch session" });
+  const cwd = h.sessions.get(req.params.id)?.cwd || h.state.sessions[req.params.id]?.cwd;
+  res.json(scratchInfo(cwd));
+});
+
+// Finish a quick chat: refuse while anything is in flight, release the
+// session, optionally delete its scratch dir, then archive (history stays).
+app.post("/api/sessions/:id/scratch/finish", async (req, res) => {
+  try {
+    const files = req.body?.files;
+    if (files !== "keep" && files !== "delete")
+      return res.status(400).json({ error: "files must be 'keep' or 'delete'" });
+    const id = req.params.id;
+    const h = hubFor(id);
+    if (!h.isScratch(id)) return res.status(404).json({ error: "not a scratch session" });
+    if (h.scratchBusy(id))
+      return res.status(409).json({ error: "会话仍在运行或有待处理项，请稍后完成或停止后再结束" });
+    const cwd = h.sessions.get(id)?.cwd || h.state.sessions[id]?.cwd;
+    await h.closeSession(id); // {closed:false,"not attached"} is fine
+    let removed = false;
+    if (files === "delete") {
+      if (cwd) removeScratchDir(scratchRoot(), cwd);
+      removed = !fs.existsSync(cwd || "__missing__");
+    }
+    await h.setArchived(id, true);
+    res.json({ ok: true, archived: true, removed });
+  } catch (e) {
+    res.status(e.status || 502).json({ error: e.message, code: e.code });
   }
 });
 
@@ -465,7 +592,7 @@ app.post("/api/sessions/:id/close", async (req, res) => {
   try {
     res.json(await hubFor(req.params.id).closeSession(req.params.id));
   } catch (e) {
-    res.status(502).json({ error: e.message });
+    res.status(e.status || 502).json({ error: e.message, code: e.code });
   }
 });
 
@@ -515,34 +642,80 @@ app.post("/api/sessions/:id/fork", async (req, res) => {
   }
 });
 
-app.delete("/api/sessions/:id", async (req, res) => {
+app.delete("/api/sessions/:id", (req, res) => {
   try {
     const h = hubFor(req.params.id);
-    await h.deleteSession(req.params.id);
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(502).json({ error: e.message });
-  }
+    void h.deleteSession(req.params.id).catch(() => {});
+    const { status } = h.deletionStatus(req.params.id);
+    res.status(status === "deleted" ? 200 : 202).json({ ok: true, status });
+  } catch (e) { res.status(502).json({ error: e.message }); }
 });
 
-app.post("/api/sessions/batch-delete", async (req, res) => {
+app.post("/api/sessions/batch-delete", (req, res) => {
   try {
-    const ids = Array.isArray(req.body?.ids)
-      ? req.body.ids.filter((x) => typeof x === "string" && x).slice(0, 500)
-      : [];
+    const ids = [...new Set(Array.isArray(req.body?.ids) ? req.body.ids.filter((x) => typeof x === "string" && x).slice(0, 500) : [])];
     if (!ids.length) return res.status(400).json({ error: "ids required" });
-    // pi deletes are fire-and-forget inside the hub (tombstones cover the
-    // in-flight window), so this loop resolves as fast as the local cleanup.
-    for (const id of ids) await hubFor(id).deleteSession(id);
-    res.json({ ok: true, deleted: ids.length });
-  } catch (e) {
-    res.status(502).json({ error: e.message });
-  }
+    for (const id of ids) void hubFor(id).deleteSession(id).catch(() => {});
+    res.status(202).json({ ok: true, status: "deleting" });
+  } catch (e) { res.status(502).json({ error: e.message }); }
+});
+
+// Read-only verification. Never infer success merely from a cached/filtered
+// session list; receipts become "deleted" only after the actual agent RPC.
+app.post("/api/sessions/delete-status", (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.filter((id) => typeof id === "string" && id).slice(0, 500) : [];
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ sessions: ids.map((id) => hubFor(id).deletionStatus(id)) });
+  } catch (error) { res.status(502).json({ error: error.message }); }
+});
+
+// Process reads never load a cold SDK session or spawn a command. Stop is an
+// explicit single-session mutation and is never replayed on transport failure.
+app.get("/api/sessions/:id/processes", (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  try { res.json(hubFor(req.params.id).processes(req.params.id)); }
+  catch (error) { res.status(error.status || 500).json({ error: error.message, code: error.code }); }
+});
+app.get("/api/sessions/:id/processes/:processId/output", (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  try { res.json(hubFor(req.params.id).processes(req.params.id, req.params.processId)); }
+  catch (error) { res.status(error.status || 500).json({ error: error.message, code: error.code }); }
+});
+app.post("/api/sessions/:id/processes/:processId/stop", async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  if (!req.params.processId || req.params.processId.length > 128) return res.status(400).json({ error: "后台任务 ID 无效" });
+  if (req.aborted || res.destroyed) return;
+  try { res.json(await hubFor(req.params.id).stopProcess(req.params.id, req.params.processId)); }
+  catch (error) { res.status(error.status || 500).json({ error: error.message, code: error.code, outcomeUnknown: !error.status || error.code === "PROCESS_STOP_UNKNOWN" }); }
+});
+
+// Read-only native tree/preview; no session/load, fork, cancellation or file rewrite.
+app.get("/api/sessions/:id/tree", (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  try { res.json(hubFor(req.params.id).sessionTree(req.params.id)); }
+  catch (error) { res.status(error.status || 500).json({ error: error.message, code: error.code }); }
+});
+app.get("/api/sessions/:id/tree/nodes/:nodeId", (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  try { res.json(hubFor(req.params.id).sessionTree(req.params.id, req.params.nodeId)); }
+  catch (error) { res.status(error.status || 500).json({ error: error.message, code: error.code }); }
+});
+app.post("/api/sessions/:id/tree/navigate", async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  const { targetId, version, summarize } = req.body || {};
+  if (typeof targetId !== "string" || !targetId || targetId.length > 128 ||
+      typeof version !== "string" || !/^[a-f0-9]{64}$/.test(version) ||
+      (summarize !== undefined && typeof summarize !== "boolean"))
+    return res.status(400).json({ error: "targetId/version/summarize 无效" });
+  if (req.aborted || res.destroyed) return;
+  try { res.json(await hubFor(req.params.id).navigateTree(req.params.id, { targetId, version, summarize })); }
+  catch (error) { res.status(error.status || 500).json({ error: error.message, code: error.code, outcomeUnknown: !error.status }); }
 });
 
 app.get("/api/sessions/:id/history", (req, res) => {
-  const s = hubFor(req.params.id).sessions.get(req.params.id);
-  res.json({ events: s?.events ?? [], attached: !!s?.attached });
+  const hub = hubFor(req.params.id), s = hub.sessions.get(req.params.id);
+  res.json({ events: hub.historyEvents(req.params.id), attached: !!s?.attached });
 });
 
 // Persisted message images (user uploads + tool results). Events carry a URL
@@ -551,8 +724,22 @@ app.get("/api/sessions/:id/history", (req, res) => {
 app.get("/api/sessions/:id/img/:mid/:idx", (req, res) => {
   const img = hubFor(req.params.id).sessionImage(req.params.id, req.params.mid, Number(req.params.idx) || 0);
   if (!img?.data) return res.status(404).end();
+  if (req.query.encoding === "base64") {
+    const body = JSON.stringify({ data: img.data, mimeType: img.mimeType });
+    res.set("Cache-Control", "private, max-age=3600").set("X-Content-Type-Options", "nosniff").vary("Accept-Encoding");
+    if (body.length >= 1024 && req.acceptsEncodings("gzip", "identity") === "gzip") {
+      gzip(body, { level: 3 }, (error, compressed) => {
+        if (res.destroyed) return;
+        if (error) return res.status(500).json({ error: "读取原始图片失败" });
+        res.type("application/json").set("Content-Encoding", "gzip").end(compressed);
+      });
+      return;
+    }
+    return res.type("application/json").end(body);
+  }
   res
     .setHeader("Content-Type", img.mimeType)
+    .setHeader("X-Content-Type-Options", "nosniff")
     .setHeader("Cache-Control", "private, max-age=3600")
     .end(Buffer.from(img.data, "base64"));
 });
@@ -567,10 +754,16 @@ app.get("/api/sessions/:id/raw", (req, res) => {
   const s = h.sessions.get(req.params.id);
   const cwd = s?.cwd || h.state.sessions[req.params.id]?.cwd;
   const file = path.isAbsolute(p) ? p : path.resolve(cwd || "/", p);
+  // Raw documents must not become active same-origin application pages.
+  // Interactive reports use the dedicated opaque preview instead.
+  res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'");
+  res.setHeader("X-Content-Type-Options", "nosniff");
   res.sendFile(file, { acceptRanges: false }, (err) => {
     if (err && !res.headersSent) res.status(404).end();
   });
 });
+
+filePreviewRoutes(app, hubFor);
 
 // ---------- static frontend ----------
 if (fs.existsSync(WEB_DIST)) {
@@ -601,8 +794,8 @@ if (fs.existsSync(WEB_DIST)) {
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({
-  server,
-  path: "/ws",
+  noServer: true,
+  perMessageDeflate: HISTORY_COMPRESSION,
   verifyClient(info, done) {
     // Browsers always send Origin on WS upgrades — a hostile page on this
     // machine could otherwise drive prompts and permission responses here.
@@ -628,6 +821,19 @@ const wss = new WebSocketServer({
   },
 });
 
+const remoteWss = remotes ? remoteWebSocketServer({ manager: remotes, token: AUTH_TOKEN, origins: TERMINAL_ORIGINS, currentBuild }) : null;
+const terminalWss = terminalWebSocketServer({ hub: terminals, token: AUTH_TOKEN, origins: TERMINAL_ORIGINS });
+server.on("upgrade", (req, socket, head) => {
+  let pathname;
+  try { pathname = new URL(req.url, "http://localhost").pathname; }
+  catch { return socket.destroy(); }
+  if (remoteWss && pathname.startsWith("/ws/remotes/")) return void remoteWss.upgrade(req, socket, head);
+  const target = pathname === "/ws" ? wss : pathname === "/ws/terminal" ? terminalWss : null;
+  if (!target) return socket.destroy();
+  target.handleUpgrade(req, socket, head, (ws) => target.emit("connection", ws, req));
+});
+process.once("exit", () => { terminals.dispose(); remotes?.dispose(); });
+
 // Hash of the currently-served bundle — read per connect so a redeployed
 // dist advertises itself without a server restart. Clients compare it to
 // their own <script> tag and reload when the build moved on.
@@ -638,10 +844,11 @@ function currentBuild() {
   } catch { return null; }
 }
 
+const serverInstanceId = randomUUID();
 wss.on("connection", (ws) => {
   ws.isAlive = true;
   ws.on("pong", () => (ws.isAlive = true));
-  ws.send(JSON.stringify({ type: "hello", build: currentBuild() }));
+  ws.send(JSON.stringify({ type: "hello", build: currentBuild(), instanceId: serverInstanceId, caps: { promptAck: true, dedupMs: 86400000 } }));
 
   ws.on("message", async (raw) => {
     let msg;
@@ -654,6 +861,10 @@ wss.on("connection", (ws) => {
     try {
       switch (msg.type) {
         case "subscribe": {
+          const supportedEncodings = [HISTORY_ENCODING_V2, HISTORY_ENCODING];
+          ws.historyEncoding = msg.historyEncoding === null ? null :
+            supportedEncodings.find((encoding) => Array.isArray(msg.historyEncodings) && msg.historyEncodings.includes(encoding)) ||
+            (supportedEncodings.includes(msg.historyEncoding) ? msg.historyEncoding : null);
           const subscribedAt = Date.now();
           const h = hubFor(msg.sessionId);
           const s = h.subscribe(ws, msg.sessionId, msg.cwd);
@@ -672,22 +883,29 @@ wss.on("connection", (ws) => {
             // is still needed in that case.
             const bc = s.lastHistoryBC;
             const alreadyBroadcast =
-              bc && bc.gen === s.gen && bc.len === s.events.length && bc.at >= subscribedAt;
+              bc && bc.gen === s.gen && bc.len === s.events.length && bc.revision === s.eventRevision && bc.at >= subscribedAt;
             if (!alreadyBroadcast) {
-              reply({
+              const stats = s.stats || (await h.statsFor(msg.sessionId));
+              if (ws.readyState === 1) ws.send(h.historyFrame({
                 type: "history",
                 sessionId: msg.sessionId,
-                events: s.events,
+                title: h.state.sessions[msg.sessionId]?.customTitle || s.title || h.state.sessions[msg.sessionId]?.title || null,
+                events: h.historyEvents(msg.sessionId),
+                revision: s.eventRevision,
                 attached: s.attached,
                 gen: s.gen,
                 state: h.stateOf(msg.sessionId),
+                processes: h.acp.getProcessSummary?.(msg.sessionId),
                 modes: s.modes,
                 configOptions: s.configOptions,
                 availableCommands: s.commands || h.commandsByCwd.get(s.cwd),
                 usage: s.usage || h.usageById.get(msg.sessionId),
-                stats: s.stats || (await h.statsFor(msg.sessionId)),
+                stats,
                 queue: h.queueView?.(msg.sessionId) ?? [],
-              });
+                pendingPermissionIds: [...s.pendingPermissions.values()].map((p) => p.requestId),
+                pendingElicitationIds: [...s.pendingElicitations.values()].map((e) => e.requestId),
+              }, { encoding: ws.historyEncoding, knownToken: typeof msg.historyToken === "string" && msg.historyToken.length < 160 ? msg.historyToken : null,
+                baseToken: typeof msg.historyBaseToken === "string" && msg.historyBaseToken.length < 160 ? msg.historyBaseToken : null }));
             }
             // Re-send unanswered permission cards — they're live JSON-RPC
             // requests, not buffered events, so history replay misses them.
@@ -749,12 +967,19 @@ wss.on("connection", (ws) => {
         case "watch":
           for (const h of hubs.values()) h.allSubscribers.add(ws);
           break;
+        case "prompt_status":
+          reply({ type: "prompt_delivery", sessionId: msg.sessionId, ...hubFor(msg.sessionId).promptStatus(msg.sessionId, msg.requestId) });
+          break;
         case "prompt": {
           const blocks = (msg.blocks || []).length
             ? msg.blocks
             : [{ type: "text", text: msg.text || "" }];
-          const result = await hubFor(msg.sessionId).prompt(msg.sessionId, msg.cwd, blocks);
-          reply({ type: "prompt_result", sessionId: msg.sessionId, ...result });
+          const h = hubFor(msg.sessionId);
+          const work = h.submitPrompt(msg.sessionId, msg.cwd, blocks, msg.requestId);
+          if (msg.requestId) reply({ type: "prompt_delivery", sessionId: msg.sessionId, ...h.promptStatus(msg.sessionId, msg.requestId) });
+          const result = await work;
+          reply({ type: "prompt_result", sessionId: msg.sessionId, ...result,
+            ...(msg.requestId ? h.promptStatus(msg.sessionId, msg.requestId) : {}) });
           break;
         }
         case "cancel":
@@ -797,7 +1022,7 @@ wss.on("connection", (ws) => {
           break;
       }
     } catch (e) {
-      reply({ type: "error", sessionId: msg.sessionId, op: msg.type, error: e.message });
+      reply({ type: "error", sessionId: msg.sessionId, op: msg.type, requestId: msg.requestId, error: e.message });
     }
   });
 
@@ -817,7 +1042,7 @@ try {
       const build = currentBuild();
       if (!build) return;
       for (const ws of wss.clients) {
-        try { ws.send(JSON.stringify({ type: "hello", build })); } catch {}
+        try { ws.send(JSON.stringify({ type: "hello", build, instanceId: serverInstanceId, caps: { promptAck: true, dedupMs: 86400000 } })); } catch {}
       }
     }, 800);
   });
@@ -839,14 +1064,20 @@ setInterval(() => {
 // ws forwards them onto wss too, and an 'error' event with no listener
 // becomes an uncaughtException that our trap above would swallow, leaving
 // a serving-nothing process behind. Exit explicitly instead.
-for (const target of [server, wss]) {
+for (const target of [server, wss, terminalWss, ...(remoteWss ? [remoteWss.wss] : [])]) {
   target.on("error", (e) => {
     console.error(`[devin-web] server error (${HOST}:${PORT}):`, e.message);
     process.exit(1);
   });
 }
 server.listen(PORT, HOST, () => {
-  console.log(`devin-web server listening on http://${HOST}:${PORT}`);
+  if (WORKER && process.env.DEVIN_WEB_WORKER_RUNTIME) {
+    const file = process.env.DEVIN_WEB_WORKER_RUNTIME;
+    fs.writeFileSync(file + ".tmp", JSON.stringify({ pid: process.pid, port: server.address().port,
+      version: process.env.DEVIN_WEB_WORKER_VERSION, instanceId: serverInstanceId }), { mode: 0o600 });
+    fs.renameSync(file + ".tmp", file);
+  }
+  console.log(`devin-web server listening on http://${HOST}:${server.address().port}`);
   if (!AUTH_TOKEN && !["127.0.0.1", "::1", "localhost"].includes(HOST)) {
     console.warn(
       `[devin-web] WARNING: listening on ${HOST} without DEVIN_WEB_TOKEN — ` +
@@ -893,6 +1124,7 @@ for (const sig of ["SIGINT", "SIGTERM"]) {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(`[devin-web] ${sig} — shutting down`);
+    terminals.dispose(); remotes?.dispose();
     // Tell browsers so they can show a banner instead of a dead socket.
     for (const ws of wss.clients) {
       try {

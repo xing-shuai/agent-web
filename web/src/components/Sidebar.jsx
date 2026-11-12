@@ -1,9 +1,13 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import {
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Columns2, Rows2, 
   Sparkles,
+  MessageSquareDashed,
+  PanelLeftClose,
+  PanelLeftOpen,
   FolderPlus,
   Plus,
   Search,
+  Filter,
   ArrowUpDown,
   ChevronRight,
   Folder,
@@ -25,27 +29,31 @@ import {
   Bell,
   BellOff,
   CheckSquare,
-  ChevronDown,
   Loader2,
+  ShieldAlert,
   X,
 } from "lucide-react";
+import { useEnvironment } from "../environmentContext.js";
+import { useLayer } from "../layers.js";
 import ContextMenu from "./ContextMenu.jsx";
 import ConfirmDialog from "./ConfirmDialog.jsx";
 import SettingsMenu from "./SettingsMenu.jsx";
 import ThemeMenu from "./ThemeMenu.jsx";
 import AccountUsage from "./AccountUsage.jsx";
+import { t } from "../i18n.js";
+import useCopyText from "../hooks/useCopyText.js";
 
 function relTime(iso) {
   if (!iso) return "";
   const diff = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (diff < 60) return "刚刚";
-  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
-  return `${Math.floor(diff / 86400)} 天前`;
+  if (diff < 60) return t("刚刚");
+  if (diff < 3600) return t("{v0} 分钟前", { v0: Math.floor(diff / 60) });
+  if (diff < 86400) return t("{v0} 小时前", { v0: Math.floor(diff / 3600) });
+  return t("{v0} 天前", { v0: Math.floor(diff / 86400) });
 }
 
 function shortCwd(cwd, home) {
-  if (!cwd) return "(未知目录)";
+  if (!cwd) return t("(未知目录)");
   if (home && (cwd === home || cwd.startsWith(home + "/")))
     return "~" + cwd.slice(home.length);
   return cwd;
@@ -56,31 +64,24 @@ const baseName = (p) => {
   return parts[parts.length - 1] || p || "";
 };
 
-const parentDir = (p) => {
-  const s = String(p || "");
-  const i = s.lastIndexOf("/");
-  return i > 0 ? s.slice(0, i) : i === 0 ? "/" : "";
-};
-
-const copy = (t) => navigator.clipboard?.writeText(t).catch(() => {});
-
-function sessionStatus(s, agentName) {
+function sessionStatus(s, agentName, attention) {
+  if (attention) return { cls: "st-attention", label: t("等待确认"), title: t("{v0} 需要你的确认或回答", { v0: agentName }) };
   if (s.state === "working")
-    return { cls: "st-work", label: "工作中", title: `${agentName} 正在工作` };
-  if (s.state === "held") return { cls: "st-held", label: "挂起", title: "已连接，等待输入" };
+    return { cls: "st-work", label: t("工作中"), title: t("{v0} 正在工作", { v0: agentName }) };
+  if (s.state === "held") return { cls: "st-held", label: t("挂起"), title: t("已连接，等待输入") };
   if (s.state === "locked-active")
     return {
       cls: "st-run",
-      label: "他端运行",
-      title: `他端进程 ${s._meta?.["cognition.ai/lockHolderPid"] || "?"} 正在运行`,
+      label: t("他端运行"),
+      title: t("他端进程 {v0} 正在运行", { v0: s._meta?.["cognition.ai/lockHolderPid"] || "?" }),
     };
   if (s.state === "locked" || (!s.state && s._meta?.["cognition.ai/isLocked"]))
     return {
       cls: "st-lock",
-      label: "他端挂起",
+      label: t("他端挂起"),
       title: s._meta?.["cognition.ai/lockHolderPid"]
-        ? `被进程 ${s._meta["cognition.ai/lockHolderPid"]} 占用（挂起）`
-        : "被其他进程占用（挂起）",
+        ? t("被进程 {v0} 占用（挂起）", { v0: s._meta["cognition.ai/lockHolderPid"] })
+        : t("被其他进程占用（挂起）"),
     };
   return null;
 }
@@ -107,14 +108,21 @@ function RenameInput({ initial, onSave, onCancel }) {
 }
 
 export default function Sidebar({
+  environmentControl,
+  collapsedSidebar = false,
+  onToggleSidebar,
   sessions,
+  loading = false,
   activeId,
   activeWorkspace,
   home,
   wsUp,
   drawerOpen,
+  onCloseDrawer,
   onNewSession,
   onOpenSession,
+  onSearchOpen,
+  onOpenSessionSplit,
   onDeleteSession,
   onDeleteSessions,
   onRenameSession,
@@ -122,27 +130,69 @@ export default function Sidebar({
   onExportSession,
   onPickWorkspace,
   onFocusWorkspace,
+  onOpenWorkspace,
   onPinSession,
   onArchiveSession,
   unreadIds,
+  attentionIds,
   agentsById,
   usageAgent,
   usageProvider,
-  agentPref,
   onPickAgent,
   creating,
   notifyEnabled,
   onToggleNotify,
+  onOpenQuick,
+  onToggleQuick,
+  quickDot,
+  quickSessionId,
+  localAgents,
 }) {
+  const env = useEnvironment();
+  const { copy } = useCopyText();
+  const { storageKey } = env;
   const [collapsed, setCollapsed] = useState(() => {
     try {
-      return JSON.parse(localStorage.getItem("devin-web.collapsed") || "{}");
+      return JSON.parse(localStorage.getItem(storageKey("devin-web.collapsed")) || "{}");
     } catch {
       return {};
     }
   });
+  const drawerRef = useRef(null);
+  const previousCollapsed = useRef(collapsedSidebar);
+  const [animating, setAnimating] = useState(false);
+  useLayoutEffect(() => {
+    if (previousCollapsed.current === collapsedSidebar) return;
+    previousCollapsed.current = collapsedSidebar;
+    const reduced = document.documentElement.dataset.motion === "off" || window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    if (reduced) { setAnimating(false); return; }
+    setAnimating(true);
+    const timer = setTimeout(() => setAnimating(false), 220);
+    return () => clearTimeout(timer);
+  }, [collapsedSidebar]);
+  useLayer({ open: !!drawerOpen, ref: drawerRef, onClose: onCloseDrawer, modal: true, initialFocus: ".sidebar-head button" });
   const [menu, setMenu] = useState(null);
   const [query, setQuery] = useState("");
+  const [contentSearch, setContentSearch] = useState({ status: "idle", results: [], truncated: false, error: null });
+  const searchSeq = useRef(0);
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 2) { searchSeq.current++; setContentSearch({ status: "idle", results: [], truncated: false, error: null }); return; }
+    const seq = ++searchSeq.current;
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      setContentSearch((prev) => ({ ...prev, status: "loading", error: null }));
+      env.api.get(`/api/sessions/search?q=${encodeURIComponent(q)}`, { signal: controller.signal })
+        .then((r) => { if (seq === searchSeq.current) setContentSearch({ status: "done", results: r.results || [], truncated: !!r.truncated, error: null }); })
+        .catch((e) => { if (seq === searchSeq.current && e.name !== "AbortError") setContentSearch({ status: "done", results: [], truncated: false,
+          error: e.status === 404 ? t("该环境的远端组件版本较旧，不支持内容搜索（需更新组件）") : e.message }); });
+    }, 400);
+    return () => { clearTimeout(timer); controller.abort(); };
+  }, [query, env]);
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [statusFilters, setStatusFilters] = useState(() => new Set());
+  const filterRef = useRef(null), filterTrigger = useRef(null);
+  useLayer({ open: filterOpen, ref: filterRef, triggerRef: filterTrigger, onClose: () => setFilterOpen(false), initialFocus: "input" });
   const [renaming, setRenaming] = useState(null); // sessionId being renamed
   const [confirmDel, setConfirmDel] = useState(null); // session pending delete
   const [selectMode, setSelectMode] = useState(false);
@@ -174,10 +224,11 @@ export default function Sidebar({
     document.addEventListener("mouseup", up);
   };
 
-  const toggle = (cwd) =>
+  const toggle = (cwd, defaultCollapsed = false) =>
     setCollapsed((c) => {
-      const n = { ...c, [cwd]: !c[cwd] };
-      localStorage.setItem("devin-web.collapsed", JSON.stringify(n));
+      const cur = defaultCollapsed ? c[cwd] !== false : !!c[cwd];
+      const n = { ...c, [cwd]: !cur };
+      localStorage.setItem(storageKey("devin-web.collapsed"), JSON.stringify(n));
       return n;
     });
 
@@ -214,17 +265,32 @@ export default function Sidebar({
   };
 
   const [showArchived, setShowArchived] = useState(
-    () => localStorage.getItem("devin-web.showArchived") === "1"
+    () => localStorage.getItem(storageKey("devin-web.showArchived")) === "1"
   );
   const archivedCount = useMemo(
     () => sessions.reduce((n, s) => n + (s.archived ? 1 : 0), 0),
     [sessions]
   );
 
+  const changeArchived = (value) => {
+    localStorage.setItem(storageKey("devin-web.showArchived"), value ? "1" : "0");
+    setShowArchived(value);
+  };
+  const resetFilters = () => { setStatusFilters(new Set()); changeArchived(false); };
+  const filterOptions = [{ id: "running", label: t("运行中") }, { id: "attention", label: t("待确认") }, { id: "unread", label: t("未读") }];
+  const filterSummary = [...filterOptions.filter((option) => statusFilters.has(option.id)).map((option) => option.label), ...(showArchived ? [t("含归档")] : [])].join(" / ");
+
   const groups = useMemo(() => {
     const m = new Map();
+    const scratchList = [];
     for (const s of sessions) {
       if (s.archived && !showArchived) continue;
+      if (statusFilters.size && !(
+        (statusFilters.has("running") && ["working", "locked-active"].includes(s.state)) ||
+        (statusFilters.has("attention") && attentionIds?.has(s.sessionId)) ||
+        (statusFilters.has("unread") && s.sessionId !== activeId && unreadIds?.has(s.sessionId))
+      )) continue;
+      if (s.scratch) { scratchList.push(s); continue; }
       const k = s.cwd || "";
       if (!m.has(k)) m.set(k, []);
       m.get(k).push(s);
@@ -257,8 +323,17 @@ export default function Sidebar({
       groups.sort((a, b) => createdOf(b.sessions[0] || {}).localeCompare(createdOf(a.sessions[0] || {})));
     else if (sortBy === "state") groups.sort((a, b) => a.bestRank - b.bestRank || b.latest.localeCompare(a.latest));
     else groups.sort((a, b) => b.latest.localeCompare(a.latest));
+    // All scratch sessions share one synthetic group — always last.
+    if (scratchList.length) {
+      scratchList.sort(sessCmp);
+      groups.push({ cwd: "__scratch__", sessions: scratchList, scratch: true,
+        latest: scratchList[0]?.updatedAt || "", bestRank: 4 });
+    }
     return groups;
-  }, [sessions, sortBy]);
+  }, [sessions, sortBy, showArchived, statusFilters, attentionIds, unreadIds, activeId]);
+
+  // Scratch group is collapsed by default; other groups default open.
+  const groupCollapsed = (g) => (g.scratch ? collapsed[g.cwd] !== false : !!collapsed[g.cwd]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -289,32 +364,36 @@ export default function Sidebar({
       y: e.clientY,
       items: [
         {
-          label: "打开会话",
+          label: t("打开会话"),
           icon: MessageSquare,
           onClick: () => {
             onFocusWorkspace(cwd);
             onOpenSession(s);
           },
         },
-        { label: "批量选择", icon: CheckSquare, onClick: () => enterSelect(s.sessionId) },
+        ...(window.innerWidth <= 768 || !onOpenSessionSplit ? [] : [
+          { label: t("在右侧拆分打开"), icon: Columns2, onClick: () => onOpenSessionSplit(s, cwd, "row") },
+          { label: t("在下方拆分打开"), icon: Rows2, onClick: () => onOpenSessionSplit(s, cwd, "column") },
+        ]),
+        { label: t("批量选择"), icon: CheckSquare, onClick: () => enterSelect(s.sessionId) },
         {
-          label: s.pinned ? "取消置顶" : "置顶会话",
+          label: s.pinned ? t("取消置顶") : t("置顶会话"),
           icon: s.pinned ? PinOff : Pin,
           onClick: () => onPinSession?.(s.sessionId, !s.pinned),
         },
         {
-          label: s.archived ? "取消归档" : "归档会话",
+          label: s.archived ? t("取消归档") : t("归档会话"),
           icon: s.archived ? ArchiveRestore : Archive,
           onClick: () => onArchiveSession?.(s.sessionId, !s.archived),
         },
-        { label: "重命名", icon: Pencil, onClick: () => setRenaming(s.sessionId) },
-        { label: "复制会话 ID", icon: Copy, onClick: () => copy(s.sessionId) },
-        { label: "导出为 Markdown", icon: Download, onClick: () => onExportSession?.(s.sessionId) },
-        { label: "导出为 JSON", icon: FileJson, onClick: () => onExportSession?.(s.sessionId, "json") },
+        { label: t("重命名"), icon: Pencil, onClick: () => setRenaming(s.sessionId) },
+        { label: t("复制会话 ID"), icon: Copy, onClick: () => copy(s.sessionId) },
+        { label: t("导出为 Markdown"), icon: Download, onClick: () => onExportSession?.(s.sessionId) },
+        { label: t("导出为 JSON"), icon: FileJson, onClick: () => onExportSession?.(s.sessionId, "json") },
         ...(s.state === "held" || s.state === "working"
           ? [
               {
-                label: "释放占用（允许其他进程打开）",
+                label: t("释放占用（允许其他进程打开）"),
                 icon: Unplug,
                 onClick: () => onReleaseSession?.(s.sessionId),
               },
@@ -322,7 +401,7 @@ export default function Sidebar({
           : []),
         { sep: true },
         {
-          label: "删除会话",
+          label: t("删除会话"),
           icon: Trash2,
           danger: true,
           onClick: () => setConfirmDel(s),
@@ -331,39 +410,70 @@ export default function Sidebar({
     });
   };
 
+  const creationItems = (cwd) => {
+    const agents = [...(agentsById?.values() || [])];
+    return (agents.length ? agents : [null]).map((agent) => ({
+      label: agents.length > 1 ? t("新建 {v0} 会话", { v0: agent.name }) : t("在此目录新建会话"),
+      icon: Plus,
+      onClick: () => {
+        if (creating) return;
+        if (agent) onPickAgent?.(agent.id);
+        onNewSession(cwd, agent?.id);
+      },
+    }));
+  };
+
+  const newAtWorkspace = (e, cwd) => {
+    e.stopPropagation();
+    if (creating) return;
+    const items = creationItems(cwd);
+    if (items.length === 1) return items[0].onClick();
+    const rect = e.currentTarget.getBoundingClientRect();
+    setMenu({ x: Math.max(8, rect.right - 200), y: rect.bottom + 4, items });
+  };
+
   const groupMenu = (e, g) => {
     e.preventDefault();
     setMenu({
       x: e.clientX,
       y: e.clientY,
       items: [
-        { label: "在此目录新建会话", icon: Plus, onClick: () => onNewSession(g.cwd) },
+        ...(g.scratch ? [] : creationItems(g.cwd)),
         {
-          label: collapsed[g.cwd] ? "展开" : "折叠",
+          label: collapsed[g.cwd] ? t("展开") : t("折叠"),
           icon: collapsed[g.cwd] ? ChevronsUpDown : ChevronsDownUp,
-          onClick: () => toggle(g.cwd),
+          onClick: () => toggle(g.cwd, !!g.scratch),
         },
-        { label: "复制路径", icon: Copy, onClick: () => copy(g.cwd) },
+        ...(g.scratch ? [] : [{ label: t("复制路径"), icon: Copy, onClick: () => copy(g.cwd) }]),
         { sep: true },
         {
-          label: showArchived ? "隐藏已归档会话" : `显示已归档会话 (${archivedCount})`,
+          label: showArchived ? t("隐藏已归档会话") : t("显示已归档会话 ({v0})", { v0: archivedCount }),
           icon: showArchived ? Archive : ArchiveRestore,
-          onClick: () => {
-            setShowArchived((v) => {
-              localStorage.setItem("devin-web.showArchived", v ? "0" : "1");
-              return !v;
-            });
-          },
+          onClick: () => changeArchived(!showArchived),
         },
       ],
     });
   };
 
+  const toggleSidebar = () => {
+    const previousFocus = document.activeElement;
+    onToggleSidebar?.();
+    requestAnimationFrame(() => {
+      if (document.activeElement !== previousFocus && document.activeElement !== document.body) return;
+      drawerRef.current?.querySelector(collapsedSidebar ? ".sb-collapse" : ".sb-expand")?.focus({ preventScroll: true });
+    });
+  };
   return (
-    <aside
-      className={"sidebar" + (drawerOpen ? " open" : "")}
+    <aside ref={drawerRef} role={drawerOpen ? "dialog" : undefined} aria-modal={drawerOpen || undefined} aria-label={t("会话与工作区")}
+      className={"sidebar" + (drawerOpen ? " open" : "") + (collapsedSidebar ? " sidebar-collapsed" : "") + (animating ? " sidebar-animating" : "")}
       style={{ "--sb-w": width + "px" }}
     >
+      <div className="sb-rail">
+        <button type="button" className="icon-ghost sb-expand" title={t("展开侧栏")} aria-label={t("展开侧栏")} onClick={toggleSidebar}><PanelLeftOpen size={18} /></button>
+        <button type="button" className="icon-ghost" title={t("会话列表")} aria-label={t("展开会话列表")} onClick={toggleSidebar}><MessageSquare size={18} /></button>
+        <button type="button" className="icon-ghost" title={t("新建会话")} aria-label={t("新建会话")} disabled={!!creating} onClick={() => onNewSession(activeWorkspace)}><Plus size={18} /></button>
+        <button type="button" className="icon-ghost" title={t("选择目录")} aria-label={t("选择目录")} onClick={onPickWorkspace}><FolderPlus size={18} /></button>
+      </div>
       <div className="sidebar-head">
         <span className="logo">
           <span className="logo-mark">
@@ -371,102 +481,95 @@ export default function Sidebar({
           </span>
           Agent Web
         </span>
-        <button className="icon-ghost" title="选择目录" onClick={onPickWorkspace}>
+        {onToggleSidebar && <button type="button" className="icon-ghost sb-collapse" title={t("收起侧栏")} aria-label={t("收起侧栏")} onClick={toggleSidebar}><PanelLeftClose size={17} /></button>}
+        <button className="icon-ghost" title={t("选择目录")} onClick={onPickWorkspace}>
           <FolderPlus size={17} />
         </button>
-      </div>
-
-      <div className="new-session-row">
-        <button
-          className="new-session"
-          disabled={!!creating}
-          onClick={() => onNewSession(activeWorkspace)}
-        >
-          {creating ? <Loader2 size={16} className="spin" /> : <Plus size={16} />}
-          {creating ? "创建中…" : "新建会话"}
-        </button>
-        {(agentsById?.size || 0) > 1 && (
-          <button
-            className="new-session-pick"
-            title="选择要新建的 Agent"
-            disabled={!!creating}
-            onClick={(e) =>
-              setMenu({
-                x: e.clientX,
-                y: e.clientY,
-                items: [...agentsById.values()].map((a) => ({
-                  label: `新建 ${a.name} 会话`,
-                  icon: Plus,
-                  onClick: () => {
-                    onPickAgent?.(a.id);
-                    onNewSession(activeWorkspace, a.id);
-                  },
-                })),
-              })
-            }
-          >
-            {agentsById.get(agentPref)?.name || "Devin"}
-            <ChevronDown size={13} />
-          </button>
-        )}
       </div>
 
       <div className="sb-tools">
         <div className="sb-search">
           <Search size={14} />
           <input
-            placeholder="搜索会话…"
+            placeholder={t("搜索会话…")}
+            aria-label={t("搜索会话或工作区")}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
         </div>
-        <button
-          className={"icon-ghost" + (selectMode ? " on" : "")}
-          title={selectMode ? "退出批量选择" : "批量选择"}
-          onClick={() => (selectMode ? exitSelect() : enterSelect())}
-        >
-          <CheckSquare size={15} />
-        </button>
-        <span className="sort-pill" title="排序方式">
-          <select
-            className="sort-sel"
-            value={sortBy}
-            onChange={(e) => {
-              setSortBy(e.target.value);
-              localStorage.setItem("devin-web.sort", e.target.value);
-            }}
-          >
-            <option value="recent">最近活跃</option>
-            <option value="state">状态优先</option>
-            <option value="name">按名称</option>
-            <option value="created">按创建时间</option>
-          </select>
-          <ArrowUpDown size={13} />
-        </span>
+        <div className="sb-filters">
+          <button type="button" ref={filterTrigger} className={"icon-ghost" + (filterSummary ? " on" : "")} title={filterSummary ? t("筛选：{v0}", { v0: filterSummary }) : t("筛选会话")} aria-label={t("筛选会话")} aria-expanded={filterOpen} onClick={() => setFilterOpen((open) => !open)}><Filter size={15} /></button>
+          {filterOpen && <div ref={filterRef} className="sb-filter-panel" role="group" aria-label={t("会话筛选")}>
+            <strong>{t("会话状态")}</strong>
+            <p>{t("多选匹配任一状态；不选则显示全部状态。")}</p>
+            {filterOptions.map((option) => <label key={option.id}><input type="checkbox" checked={statusFilters.has(option.id)} onChange={(event) => {
+              const checked = event.target.checked;
+              setStatusFilters((previous) => { const next = new Set(previous); if (checked) next.add(option.id); else next.delete(option.id); return next; });
+            }} />{option.label}</label>)}
+            <label className="archive-filter"><input type="checkbox" checked={showArchived} onChange={(event) => changeArchived(event.target.checked)} />{t("显示已归档（{v0}）", { v0: archivedCount })}</label>
+            <button type="button" className="secondary" disabled={!filterSummary} onClick={resetFilters}>{t("清除筛选")}</button>
+          </div>}
+        </div>
+        <button type="button" className={"icon-ghost" + (selectMode ? " on" : "")} title={t("更多列表操作")} aria-label={t("更多列表操作")} aria-haspopup="menu" onClick={(event) => {
+          const rect = event.currentTarget.getBoundingClientRect();
+          setMenu({ x: rect.right - 224, y: rect.bottom + 4, items: [
+            { label: selectMode ? t("退出批量选择") : t("批量选择"), icon: CheckSquare, onClick: () => selectMode ? exitSelect() : enterSelect() },
+            { label: t("排序方式"), icon: ArrowUpDown, children: [
+              ["recent", t("最近活跃")], ["state", t("状态优先")], ["name", t("按名称")], ["created", t("按创建时间")],
+            ].map(([value, label]) => ({ label, checked: sortBy === value, onClick: () => {
+              localStorage.setItem("devin-web.sort", value); setSortBy(value);
+            } })) },
+          ] });
+        }}><MoreHorizontal size={17} /></button>
       </div>
 
-      <div className="session-list">
-        {filtered.length === 0 && <div className="dim pad">{query ? "无匹配会话" : "暂无会话"}</div>}
+      {onToggleQuick && (
+        <button type="button" className={"sb-quick" + (quickDot ? " dot-" + quickDot : "")} onClick={onToggleQuick}
+          title={t("快速对话")} aria-label={t("快速对话")}>
+          <MessageSquareDashed size={15} /><span className="sb-quick-label">{t("快速对话")}</span>
+          {quickDot && <i className="quick-dot" aria-hidden="true" />}
+        </button>
+      )}
+      {filterSummary && <div className="sb-filter-summary" role="status"><span>{t("{v0} · {v1} 个会话", { v0: filterSummary, v1: visibleIds.length })}</span><button type="button" className="icon-ghost" aria-label={t("清除会话筛选")} onClick={resetFilters}><X size={13} /></button></div>}
+      <div className="session-list" aria-busy={loading}>
+        {loading && sessions.length === 0 && <div className="sessions-skeleton" role="status" aria-label={t("正在加载会话列表")}>
+          <div className="sessions-loading-label"><Loader2 size={13} className="spin" />{t("正在加载会话…")}</div>
+          {Array.from({ length: 6 }, (_, i) => <div className="session-skeleton" key={i} aria-hidden="true" style={{ "--row": i }}>
+            <span className="skeleton-dot" /><span className="skeleton-lines"><i /><i /></span>
+          </div>)}
+        </div>}
+        {query.trim().length >= 2 && contentSearch.status !== "idle" && <div className="content-matches">
+          <h3>{t("内容匹配")}{contentSearch.status === "loading" && <Loader2 size={12} className="spin" />}</h3>
+          {contentSearch.error && <div className="dim pad">{contentSearch.error}</div>}
+          {contentSearch.results.map((r) => {
+            const inTitle = filtered.some((g) => g.sessions.some((x) => x.sessionId === r.sessionId));
+            return <button key={r.sessionId} type="button" className={"session-row content-hit" + (inTitle ? " title-also" : "")} onClick={() => onSearchOpen?.(r, query.trim())}>
+              <div className="sr-top">{r.title || r.sessionId}<span className="agent-tag">{r.agent}</span></div>
+              <div className="sr-snippet">{r.snippet.slice(0, r.matchStart)}<mark>{r.snippet.slice(r.matchStart, r.matchEnd)}</mark>{r.snippet.slice(r.matchEnd)}</div>
+              <div className="sr-meta"><span>{r.countCapped ? `${r.count}+ ${t("处")}` : t("{v0} 处", { v0: r.count })}</span></div>
+            </button>;
+          })}
+          {contentSearch.status === "done" && !contentSearch.error && contentSearch.results.length === 0 && <div className="dim pad">{t("无内容匹配")}</div>}
+          {contentSearch.truncated && <div className="dim pad">{t("结果已截断（时间预算内仅搜索了部分会话）")}</div>}
+        </div>}
+        {(!loading || sessions.length > 0) && filtered.length === 0 && <div className="dim pad">{query ? t("无匹配会话") : filterSummary ? t("暂无符合筛选条件的会话") : t("暂无会话")}</div>}
         {filtered.map((g) => (
           <div
             key={g.cwd}
             className={
-              "ws-group" + (g.cwd === activeWorkspace ? " current" : "") + (collapsed[g.cwd] ? "" : " open")
+              "ws-group" + (!g.scratch && g.cwd === activeWorkspace ? " current" : "") + (groupCollapsed(g) ? "" : " open") + (g.scratch ? " scratch" : "")
             }
           >
             <div
               className="ws-head"
-              title={g.cwd}
-              onClick={() => {
-                onFocusWorkspace(g.cwd);
-                toggle(g.cwd);
-              }}
+              title={g.scratch ? t("临时对话") : g.cwd}
               onContextMenu={(e) => groupMenu(e, g)}
             >
               {selectMode && (
                 <input
                   type="checkbox"
                   className="sr-check"
+                  aria-label={t("选择 {v0} 下的会话", { v0: g.cwd })}
                   checked={g.sessions.length > 0 && g.sessions.every((s) => sel.has(s.sessionId))}
                   ref={(el) => {
                     if (el)
@@ -486,50 +589,52 @@ export default function Sidebar({
                   }}
                 />
               )}
-              <span className="ws-chev">
-                <ChevronRight size={13} />
-              </span>
-              <span className="ws-ic">
-                {collapsed[g.cwd] ? <Folder size={15} /> : <FolderOpen size={15} />}
-              </span>
-              <span className="ws-name">{baseName(shortCwd(g.cwd, home)) || g.cwd}</span>
-              <span className="ws-sub">{shortCwd(parentDir(g.cwd), home)}</span>
-              <span className="cnt">{g.sessions.length}</span>
-              <button
-                className="ws-add"
-                title="在此目录新建会话"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onNewSession(g.cwd);
-                }}
-              >
-                <Plus size={13} />
+              <button type="button" className="ws-chev" aria-label={g.scratch ? t("{v0}临时对话", { v0: groupCollapsed(g) ? t("展开") : t("折叠") }) : t("{v0}工作区 {v1}", { v0: groupCollapsed(g) ? t("展开") : t("折叠"), v1: g.cwd })} aria-expanded={!groupCollapsed(g)} onClick={() => toggle(g.cwd, !!g.scratch)}><ChevronRight size={13} /></button>
+              <button type="button" className="ws-focus" aria-label={g.scratch ? t("临时对话") : t("进入工作区 {v0}", { v0: g.cwd })} aria-current={!g.scratch && g.cwd === activeWorkspace ? "location" : undefined} onClick={() => g.scratch ? toggle(g.cwd, true) : (onOpenWorkspace || onFocusWorkspace)?.(g.cwd)}>
+                <span className="ws-ic">{g.scratch ? <MessageSquareDashed size={15} /> : groupCollapsed(g) ? <Folder size={15} /> : <FolderOpen size={15} />}</span>
+                <span className="ws-name">{g.scratch ? t("临时对话") : baseName(shortCwd(g.cwd, home)) || g.cwd}</span>
+                <span className="cnt">{g.sessions.length}</span>
               </button>
+              {!g.scratch && (
+                <button
+                  className="ws-add"
+                  type="button" title={creating ? t("正在创建会话…") : t("在此目录新建会话")}
+                  aria-label={t("在 {v0} 新建会话", { v0: g.cwd })} disabled={!!creating}
+                  onClick={(e) => newAtWorkspace(e, g.cwd)}
+                >
+                  <Plus size={13} />
+                </button>
+              )}
             </div>
-            {!collapsed[g.cwd] && (
+            {!groupCollapsed(g) && (
               <div className="ws-body">
                 {g.sessions.map((s) => {
-                  const st = sessionStatus(
-                    s,
-                    agentsById?.get(s.agent || "devin")?.name || s.agent || "Devin"
-                  );
+                  const unread = unreadIds?.has(s.sessionId) && s.sessionId !== activeId;
+                  const attention = attentionIds?.has(s.sessionId);
+                  const agentId = s.agent || "devin";
+                  const agentName = agentsById?.get(agentId)?.name || s.agent || "Devin";
+                  const state = sessionStatus(s, agentName, attention);
+                  const st = state || (unread ? { cls: "st-unread", label: t("未读"), title: t("有未读消息") } : null);
                   return (
                     <div
                       key={s.sessionId}
-                      className={"session-row" + (s.sessionId === activeId ? " active" : "") + (selectMode && sel.has(s.sessionId) ? " sel" : "")}
+                      className={"session-row" + ((s.sessionId === activeId || s.sessionId === quickSessionId) ? " active" : "") + (unread ? " unread" : "") + (attention ? " attention" : "") + (selectMode && sel.has(s.sessionId) ? " sel" : "")}
                       onClick={() => {
                         if (selectMode) return toggleSel(s.sessionId);
+                        if (g.scratch) return onOpenQuick?.(s);
                         onFocusWorkspace(g.cwd);
                         onOpenSession(s);
                       }}
                       onContextMenu={(e) => sessionMenu(e, s, g.cwd)}
                       title={s.title || s.sessionId}
                     >
+                      {!selectMode && renaming !== s.sessionId && <button type="button" className="session-open" aria-label={t("打开会话 {v0} · {v1}{v2}", { v0: s.title || s.sessionId, v1: agentName, v2: st ? ` · ${st.label}` : "" })} aria-current={s.sessionId === activeId ? "page" : undefined} />}
                       <div className="sr-top">
                         {selectMode && (
                           <input
                             type="checkbox"
                             className="sr-check"
+                            aria-label={t("选择会话 {v0}", { v0: s.title || s.sessionId })}
                             checked={sel.has(s.sessionId)}
                             onClick={(e) => e.stopPropagation()}
                             onChange={() => toggleSel(s.sessionId)}
@@ -546,29 +651,29 @@ export default function Sidebar({
                           />
                         ) : (
                           <div className="session-title">
+                            {unread && state && !attention && <span className="session-unread-dot" title={t("有未读消息")} />}
                             {s.pinned && <Pin size={11} className="pin-ic" />}
                             {(agentsById?.size || 0) > 1 && (
-                              <span className="sb-agent-tag">
-                                {agentsById?.get(s.agent || "devin")?.name || s.agent || "Devin"}
+                              <span className="sb-agent-tag" title={agentName} aria-label={agentName}>
+                                {agentId === "devin" ? "de" : agentName}
                               </span>
                             )}
                             {s.title || s.sessionId}
                           </div>
                         )}
-                        <span className="sr-time">{relTime(s.updatedAt)}</span>
                       </div>
-                      {st && (
-                        <div className={"session-status " + st.cls} title={st.title}>
-                          <span className="st-dot" />
-                          <span className="st-label">{st.label}</span>
-                        </div>
-                      )}
-                      {unreadIds?.has(s.sessionId) && s.sessionId !== activeId && (
-                        <span className="unread-dot" title="有新内容" />
-                      )}
+                      <div className="sr-meta">
+                        {st && <span className={"session-status " + st.cls} title={st.title} role="img" aria-label={st.label}>
+                          {attention ? <ShieldAlert size={11} aria-hidden="true" /> : <span className="st-dot" aria-hidden="true" />}
+                          <span className="st-label" aria-hidden="true">{st.label}</span>
+                        </span>}
+                        <span className="sr-time" title={s.updatedAt}>{relTime(s.updatedAt)}</span>
+                      </div>
                       <button
                         className="sr-more"
-                        title="更多操作"
+                        title={t("更多操作")}
+                        aria-label={t("会话 {v0} 的更多操作", { v0: s.title || s.sessionId })}
+                        aria-haspopup="menu"
                         onClick={(e) => {
                           e.stopPropagation();
                           const r = e.currentTarget.getBoundingClientRect();
@@ -588,15 +693,15 @@ export default function Sidebar({
 
       {selectMode && (
         <div className="sel-bar">
-          <span className="sel-n">已选 {sel.size}</span>
+          <span className="sel-n">{t("已选 {v0}", { v0: sel.size })}</span>
           <button
             className="sel-btn"
             onClick={() => setSel(new Set(visibleIds))}
           >
-            全选
+            {t("全选")}
           </button>
           <button className="sel-btn" onClick={() => setSel(new Set())}>
-            清空
+            {t("清空")}
           </button>
           <span className="sel-sp" />
           <button
@@ -604,40 +709,39 @@ export default function Sidebar({
             disabled={!sel.size}
             onClick={() => setConfirmBatch(true)}
           >
-            删除
+            {t("删除")}
           </button>
-          <button className="sel-btn" title="退出批量选择" onClick={exitSelect}>
+          <button className="sel-btn" title={t("退出批量选择")} onClick={exitSelect}>
             <X size={14} />
           </button>
         </div>
       )}
 
       <div className="sb-foot">
-        <span className={"conn" + (wsUp ? " up" : "")} />
-        <span>{wsUp ? "已连接" : "连接断开"}</span>
+        {environmentControl || <span className="sb-conn"><span className={"conn" + (wsUp ? " up" : "")} /><span>{wsUp ? t("已连接") : t("连接断开")}</span></span>}
         <AccountUsage agent={usageAgent} provider={usageProvider} />
         {onToggleNotify && (
           <button
             className={"icon-ghost" + (notifyEnabled ? " on" : "")}
-            title={notifyEnabled ? "关闭完成通知" : "任务完成时通知我"}
+            title={notifyEnabled ? t("关闭完成通知") : t("任务完成时通知我")}
             onClick={onToggleNotify}
           >
             {notifyEnabled ? <Bell size={15} /> : <BellOff size={15} />}
           </button>
         )}
-        <SettingsMenu />
+        <SettingsMenu agents={localAgents} />
         <ThemeMenu />
       </div>
 
-      <div className="sb-resize" onMouseDown={startResize} title="拖拽调整宽度" />
+      <div className="sb-resize" onMouseDown={startResize} title={t("拖拽调整宽度")} />
       <ContextMenu menu={menu} onClose={() => setMenu(null)} />
       {confirmDel && (
         <ConfirmDialog
-          title="删除会话"
-          message={`确定删除会话「${confirmDel.title || confirmDel.sessionId}」吗？此操作不可撤销。`}
-          confirmLabel="删除"
-          onConfirm={() => {
-            onDeleteSession(confirmDel.sessionId);
+          title={t("删除会话")}
+          message={t("确定删除会话「{v0}」吗？此操作不可撤销。", { v0: confirmDel.title || confirmDel.sessionId })}
+          confirmLabel={t("删除")}
+          onConfirm={async ({ onProgress } = {}) => {
+            await onDeleteSession(confirmDel.sessionId, { onProgress: () => onProgress?.(t("核对结果…")) });
             setConfirmDel(null);
           }}
           onCancel={() => setConfirmDel(null)}
@@ -645,11 +749,11 @@ export default function Sidebar({
       )}
       {confirmBatch && (
         <ConfirmDialog
-          title="批量删除会话"
-          message={`确定删除选中的 ${sel.size} 个会话吗？此操作不可撤销。`}
-          confirmLabel={`删除 ${sel.size} 个`}
-          onConfirm={() => {
-            onDeleteSessions?.([...sel]);
+          title={t("批量删除会话")}
+          message={t("确定删除选中的 {v0} 个会话吗？此操作不可撤销。", { v0: sel.size })}
+          confirmLabel={t("删除 {v0} 个", { v0: sel.size })}
+          onConfirm={async ({ onProgress } = {}) => {
+            await onDeleteSessions?.([...sel], { onProgress: () => onProgress?.(t("核对结果…")) });
             exitSelect();
           }}
           onCancel={() => setConfirmBatch(false)}

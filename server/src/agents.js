@@ -37,7 +37,7 @@ export function buildAgents() {
       args: [],
       initMeta: {},
       devinExt: false,
-      caps: { fork: false, quota: false },
+      caps: { fork: false, quota: false, tree: true, processes: process.platform !== "win32" },
     },
   ];
   const enabled = (process.env.DEVIN_WEB_AGENTS || "devin,pi")

@@ -1,27 +1,30 @@
 import React, { useMemo, useState } from "react";
 import { HelpCircle, X } from "lucide-react";
+import { t } from "../i18n.js";
 
 /** ACP elicitation/create — the agent asks a structured question.
  *  Schema-driven form: enum/oneOf → single-select chips, array → multi-select
  *  chips, boolean → yes/no, number/integer → numeric input, string → text.
  *  Responds {action:"accept",content} | {action:"decline"}. */
-export default function ElicitationCard({ pendingElicitations, onAnswer, agentName = "Devin" }) {
+function ElicitationCard({ pendingElicitations, onAnswer, agentName = "Devin", wsUp = true }) {
   const [answered, setAnswered] = useState(() => new Set());
   if (!pendingElicitations?.length) return null;
   const done = (requestId, action, content) => {
+    // Only mark answered when the response actually left the wire — an
+    // offline send keeps the card answerable instead of firing on reconnect.
+    if (onAnswer(requestId, action, content) === false) return;
     setAnswered((s) => new Set(s).add(requestId));
-    onAnswer(requestId, action, content);
   };
   return (
     <div className="perm-stack col">
       {pendingElicitations.map((e) => (
-        <ElicitForm key={e.requestId} e={e} agentName={e.agentName || agentName} disabled={answered.has(e.requestId)} onDone={done} />
+        <ElicitForm key={e.requestId} e={e} agentName={e.agentName || agentName} disabled={answered.has(e.requestId) || !wsUp} disabledTitle={!wsUp ? t("连接断开") : null} onDone={done} />
       ))}
     </div>
   );
 }
 
-function ElicitForm({ e, agentName, disabled, onDone }) {
+function ElicitForm({ e, agentName, disabled, disabledTitle, onDone }) {
   const schema = e.schema || {};
   const fields = useMemo(() => Object.entries(schema.properties || {}), [schema]);
   const [values, setValues] = useState(() => {
@@ -37,9 +40,9 @@ function ElicitForm({ e, agentName, disabled, onDone }) {
     <div className="perm-card elic-card">
       <div className="perm-title">
         <HelpCircle size={15} />
-        {agentName} 提问
+        {t("{v0} 提问", { v0: agentName })}
       </div>
-      <div className="elic-msg">{e.message || schema.title || "请回答"}</div>
+      <div className="elic-msg">{e.message || schema.title || t("请回答")}</div>
       {schema.description && schema.description !== e.message && <div className="elic-desc">{schema.description}</div>}
       {fields.map(([name, p]) => (
         <Field
@@ -53,13 +56,13 @@ function ElicitForm({ e, agentName, disabled, onDone }) {
         <button
           className="primary"
           disabled={disabled || missing.length > 0}
-          title={missing.length ? `还有必填项: ${missing.join(", ")}` : ""}
+          title={disabledTitle || (missing.length ? t("还有必填项: {v0}", { v0: missing.join(", ") }) : "")}
           onClick={() => onDone(e.requestId, "accept", values)}
         >
-          提交
+          {t("提交")}
         </button>
-        <button className="danger-ghost" disabled={disabled} onClick={() => onDone(e.requestId, "decline")}>
-          <X size={13} /> 拒绝
+        <button className="danger-ghost" disabled={disabled} title={disabledTitle} onClick={() => onDone(e.requestId, "decline")}>
+          <X size={13} /> {t("拒绝")}
         </button>
       </div>
     </div>
@@ -132,8 +135,8 @@ function Field({ name, p, value, req, onChange, disabled }) {
         {label}
         <div className="elic-opts">
           {[
-            { v: true, t: "是" },
-            { v: false, t: "否" },
+            { v: true, t: t("是") },
+            { v: false, t: t("否") },
           ].map((o) => (
             <button
               key={String(o.v)}
@@ -179,3 +182,5 @@ function Field({ name, p, value, req, onChange, disabled }) {
     </div>
   );
 }
+
+export default React.memo(ElicitationCard);

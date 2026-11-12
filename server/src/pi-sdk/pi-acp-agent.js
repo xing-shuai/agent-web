@@ -22,6 +22,8 @@
 //    own package dir (no `which pi` / `npm root -g` spawnSync — those
 //    froze the whole server for ~1s each).
 import { PiSdkProcess } from "./pi-sdk-process.js";
+import { processNotification } from "./processes.js";
+import { TurnTelemetryTracker } from "../../../web/src/turnTelemetry.js";
 import { readFile as readFileAsync, readdir as readdirAsync, unlink as unlinkAsync } from "node:fs/promises";
 import { promisify as promisify2 } from "node:util";
 
@@ -314,8 +316,12 @@ function bashResultText(result) {
 function bashExitCode(result, isError) {
   const record = result;
   const details = record?.details;
-  const exitCode = details?.exitCode ?? record?.exitCode ?? details?.code ?? record?.code;
-  return typeof exitCode === "number" ? exitCode : isError ? 1 : 0;
+  const exitCode = record?.structuredContent?.exit_code ?? details?.exitCode ?? record?.exitCode ?? details?.exit_code ?? record?.exit_code ?? details?.code ?? record?.code;
+  if (typeof exitCode === "number") return exitCode;
+  // Pi persists the shell's display output but not structuredContent. Its
+  // nonzero exit footer is authoritative; abort/timeout errors have no exit code.
+  const recorded = isError ? bashResultText(result).match(/(?:^|\n)Command exited with code (-?\d+)\s*$/) : null;
+  return recorded ? Number(recorded[1]) : isError ? null : 0;
 }
 function bashOutputDelta(previous, next) {
   return next.startsWith(previous) ? next.slice(previous.length) : next;
@@ -376,7 +382,8 @@ function toUsageUpdate(stats) {
   const size = stats?.contextUsage?.contextWindow;
   if (typeof used !== "number" || !Number.isSafeInteger(used) || used < 0) return null;
   if (typeof size !== "number" || !Number.isSafeInteger(size) || size <= 0) return null;
-  return { sessionUpdate: "usage_update", used, size };
+  return { sessionUpdate: "usage_update", used, size,
+    _meta: { piAcp: { contextUsage: { estimated: stats.contextUsage.estimated === true, source: stats.contextUsage.source || "provider" } } } };
 }
 function findUniqueLineNumber(text, needle) {
   if (!needle) return void 0;
@@ -535,7 +542,165 @@ var PiSessionRegistry = class {
     return session;
   }
 };
+// A delivery fence separates finalized persisted messages from the live tail.
+// It is metadata only: never load/restart the AgentSession to recover UI history.
+export const piMessageKey = (message) => {
+  const notice = processNotification(message);
+  if (notice) return `process:${notice.id}`;
+  return message && ["user", "assistant", "toolResult"].includes(message.role) && Number.isFinite(message.timestamp)
+    ? `${message.role}:${message.timestamp}:${message.toolCallId || ""}` : null;
+};
+const historyBoundary = (message) => ({ sessionUpdate: "session_info_update",
+  _meta: { piAcp: { historyBoundary: piMessageKey(message) } } });
+
+export function piHistoryEvents(data, cwd) {
+  const recorded = []; let current;
+  const record = ({ update }) => recorded.push({ t: current.at, update, entryIndex: current.entryIndex, messageKey: current.key });
+  const messages = Array.isArray(data?.messages) ? data.messages : [];
+  // Tool results don't carry their arguments. Rejoin assistant tool calls so
+  // task updates (and other inputs) remain available after a cold reload.
+  const toolInputs = new Map();
+  for (const message of messages) {
+    if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+    for (const block of message.content) {
+      if (block?.type === "toolCall" && block.id) toolInputs.set(String(block.id), block.arguments);
+    }
+  }
+  const replay = Array.isArray(data?.entries) ? data.entries : messages.map((message) => ({ type: "message", message }));
+  for (const [entryIndex, entry] of replay.entries()) {
+    current = { entryIndex, key: piMessageKey(entry.type === "custom_message" ? entry : entry.message), at: Date.parse(entry.timestamp) || entry.message?.timestamp || Date.now() };
+    const notice = processNotification(entry.type === "custom_message" ? entry : entry.message);
+    if (notice) {
+      record({ update: { sessionUpdate: "session_info_update", _meta: { piAcp: { processNotification: notice } } } });
+      continue;
+    }
+    if (entry.type === "compaction") {
+      record({ sessionId: "", update: {
+        sessionUpdate: "session_info_update", _meta: { piAcp: { compaction: {
+          id: entry.id, status: "completed", at: Date.parse(entry.timestamp),
+          summary: entry.summary, tokensBefore: entry.tokensBefore, firstKeptEntryId: entry.firstKeptEntryId,
+        } } },
+      } });
+      continue;
+    }
+    if (entry.type === "branch_summary") {
+      record({ update: { sessionUpdate: "session_info_update", _meta: { piAcp: { branchSummary: {
+        id: entry.id, summary: entry.summary, at: Date.parse(entry.timestamp), fromId: entry.fromId,
+      } } } } });
+      continue;
+    }
+    if (entry.type !== "message") continue;
+    const m = entry.message;
+    const role = String(m?.role ?? "");
+    if (role === "user") {
+      const text = normalizePiMessageText(m?.content);
+      if (text) {
+        record({
+          sessionId: "",
+          update: {
+            sessionUpdate: "user_message_chunk",
+            content: { type: "text", text }
+          }
+        });
+      }
+    }
+    if (role === "user" && Array.isArray(m.content)) {
+      for (const image of m.content.filter((block) => block.type === "image"))
+        record({ update: { sessionUpdate: "user_message_chunk", content: image } });
+    }
+    if (role === "assistant") {
+      for (const block of Array.isArray(m.content) ? m.content : []) {
+        if (block.type === "toolCall" && block.id) {
+          record({ sessionId: "", update: {
+            sessionUpdate: "tool_call", toolCallId: String(block.id), title: bashCommand(block.arguments) ?? block.name,
+            kind: toToolKind(block.name), status: "pending", rawInput: block.arguments,
+            _meta: { "cognition.ai/inferenceToolName": block.name },
+          } });
+          continue;
+        }
+        const thought = block.type === "thinking" && !block.redacted;
+        const text = thought ? block.thinking : block.type === "text" ? block.text : null;
+        if (!text) continue;
+        record({ sessionId: "", update: {
+          sessionUpdate: thought ? "agent_thought_chunk" : "agent_message_chunk",
+          content: { type: "text", text },
+        } });
+      }
+    }
+    if (role === "toolResult") {
+      const toolName = String(m?.toolName ?? "tool");
+      const toolCallId = String(m?.toolCallId ?? crypto.randomUUID());
+      const isError = Boolean(m?.isError);
+      const isBash = isBashTool(toolName);
+      if (isBash) {
+        const text2 = bashResultText(m);
+        record({
+          sessionId: "",
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId,
+            title: bashCommand(toolInputs.get(toolCallId)) ?? bashCommand(m) ?? toolName,
+            rawInput: toolInputs.get(toolCallId), rawOutput: m,
+            kind: "execute",
+            status: isError ? "failed" : "completed",
+            content: bashTerminalContent(toolCallId),
+            _meta: { ...bashTerminalInfoMeta(toolCallId, cwd), "cognition.ai/inferenceToolName": toolName }
+          }
+        });
+        record({
+          sessionId: "",
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId,
+            status: isError ? "failed" : "completed",
+            content: [{ type: "content", content: { type: "text", text: text2 } }],
+            rawOutput: m,
+            _meta: {
+              ...text2 ? bashTerminalOutputMeta(toolCallId, text2) : {},
+              ...bashTerminalExitMeta(toolCallId, bashExitCode(m, isError))
+            }
+          }
+        });
+        continue;
+      }
+      record({
+        sessionId: "",
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId,
+          title: toolName,
+          kind: toolName === "read" ? "read" : toolName === "write" || toolName === "edit" ? "edit" : "other",
+          status: isError ? "failed" : "completed",
+          rawInput: toolInputs.get(toolCallId) ?? null,
+          rawOutput: m
+        }
+      });
+      const text = toolResultToText(m);
+      record({
+        sessionId: "",
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId,
+          status: isError ? "failed" : "completed",
+          content: text ? [{ type: "content", content: { type: "text", text } }] : null,
+          rawOutput: m
+        }
+      });
+    }
+  }
+  const events = [];
+  for (let i = 0; i < recorded.length; i++) {
+    const event = recorded[i]; events.push(event);
+    if (event.messageKey && event.entryIndex !== recorded[i + 1]?.entryIndex)
+      events.push({ ...event, update: { sessionUpdate: "session_info_update", _meta: { piAcp: { historyBoundary: event.messageKey } } } });
+  }
+  return events;
+}
+
 var PiAcpSession = class {
+  telemetry = new TurnTelemetryTracker();
+  telemetryEmittedAt = -Infinity;
+  contextUsageRevision = 0;
   sessionId;
   cwd;
   mcpServers;
@@ -558,6 +723,8 @@ var PiAcpSession = class {
   // when retry, compaction, or queued continuations run. The session-level prompt
   // completes only when `agent_settled` is emitted.
   inAgentLoop = false;
+  runActive = false;
+  runRevision = 0;
   // For ACP diff support: capture file contents before edit/write mutations,
   // then emit ToolCallContent {type:"diff"}. Compatible structured edit/write
   // events may need to be implemented in pi in the future.
@@ -585,6 +752,7 @@ var PiAcpSession = class {
         console.error(`[pi-sdk] handlePiEvent threw for ${this.sessionId}:`, e);
       }
     });
+    if (this.proc.processes) this.emit({ sessionUpdate: "session_info_update", _meta: { piAcp: { processes: this.proc.processes.summary() } } });
   }
   setStartupInfo(text) {
     this.startupInfo = text;
@@ -607,7 +775,7 @@ var PiAcpSession = class {
     const expandedMessage = expandSlashCommand(message, this.fileCommands);
     const turnPromise = new Promise((resolve4, reject) => {
       const queued = { message: expandedMessage, images, resolve: resolve4, reject };
-      if (this.pendingTurn) {
+      if (this.pendingTurn || this.runActive || this.proc.session?.isIdle === false) {
         this.turnQueue.push(queued);
         this.emit({
           sessionUpdate: "agent_message_chunk",
@@ -658,25 +826,38 @@ var PiAcpSession = class {
     await this.lastEmit;
   }
   /**
-   * Best-effort: publish the real pi context-window occupancy as ACP `usage_update`.
+   * Publish current context occupancy, marking projection estimates explicitly.
    * Queued updates are flushed even when the stats query fails or times out, so callers
    * can await this before resolving `session/prompt`.
    */
-  async publishContextUsage() {
+  async publishContextUsage({ intermediate = false } = {}) {
+    const revision = ++this.contextUsageRevision;
+    // Public message_end is emitted just before the SDK persists that message.
+    // Yield once so the projection contains the finalized usage, not the prior response.
+    await Promise.resolve();
     try {
-      if (typeof this.proc.getSessionStats === "function") {
-        const update = toUsageUpdate(await this.proc.getSessionStats(SESSION_STATS_TIMEOUT_MS));
-        if (update) this.emit(update);
+      const stats = typeof this.proc.getContextUsage === "function"
+        ? { contextUsage: await this.proc.getContextUsage() }
+        : typeof this.proc.getSessionStats === "function" ? await this.proc.getSessionStats(SESSION_STATS_TIMEOUT_MS) : null;
+      const update = toUsageUpdate(stats);
+      // A delayed query must not overwrite a newer compaction/response sample.
+      if (update && revision === this.contextUsageRevision) {
+        update._meta.piAcp.contextUsage.intermediate = intermediate;
+        this.emit(update);
       }
     } catch {
     }
     await this.flushEmits();
   }
   async settleTurn() {
+    const revision = this.runRevision, pending = this.pendingTurn;
     await this.publishContextUsage();
     const reason = this.cancelRequested ? "cancelled" : "end_turn";
-    this.pendingTurn?.resolve(reason);
-    this.pendingTurn = null;
+    if (this.pendingTurn === pending) { pending?.resolve(reason); this.pendingTurn = null; }
+    // A completion can start a fresh autonomous run during the stats await.
+    // Never clear that new run or drain a queued prompt into it.
+    if (revision !== this.runRevision) return;
+    this.runActive = false;
     this.inAgentLoop = false;
     const next = this.turnQueue.shift();
     if (next) {
@@ -698,11 +879,13 @@ var PiAcpSession = class {
       sessionUpdate: params.sessionUpdate,
       toolCallId: params.toolCallId,
       title: bashCommand(params.args) ?? params.toolName,
+      rawInput: params.args,
       kind: "execute",
       status: params.status,
       locations: params.locations,
       ...params.includeTerminal ? { content: bashTerminalContent(params.toolCallId) } : {},
-      ...params.includeTerminal ? { _meta: bashTerminalInfoMeta(params.toolCallId, this.cwd) } : {}
+      _meta: { "cognition.ai/inferenceToolName": params.toolName,
+        ...params.includeTerminal ? bashTerminalInfoMeta(params.toolCallId, this.cwd) : {} }
     });
   }
   emitBashOutputUpdate(params) {
@@ -714,6 +897,8 @@ var PiAcpSession = class {
       sessionUpdate: "tool_call_update",
       toolCallId: params.toolCallId,
       status: params.status,
+      content: [{ type: "content", content: { type: "text", text } }],
+      rawOutput: params.result,
       _meta: {
         ...delta ? bashTerminalOutputMeta(params.toolCallId, delta) : {},
         ...params.status === "completed" || params.status === "failed" ? bashTerminalExitMeta(params.toolCallId, bashExitCode(params.result, Boolean(params.isError))) : {}
@@ -728,6 +913,8 @@ var PiAcpSession = class {
     this.bashOutputSnapshots.delete(toolCallId);
   }
   startTurn(t) {
+    this.runRevision++;
+    this.runActive = true;
     this.cancelRequested = false;
     this.inAgentLoop = false;
     this.pendingTurn = { resolve: t.resolve, reject: t.reject };
@@ -745,6 +932,7 @@ var PiAcpSession = class {
           this.pendingTurn?.resolve(reason);
         }
         this.pendingTurn = null;
+        this.runActive = false;
         this.inAgentLoop = false;
         this.emit({
           sessionUpdate: "session_info_update",
@@ -756,7 +944,33 @@ var PiAcpSession = class {
   }
   handlePiEvent(ev) {
     const type = String(ev.type ?? "");
+    // PiSdkProcess uses JSON events, which omit message on streaming updates.
+    const stats = this.telemetry.handle(type === "message_update" ? { ...ev, message: { role: "assistant" } } : ev);
+    const boundary = ["agent_start", "turn_start", "message_start", "message_end", "turn_end", "agent_settled"].includes(type);
+    const delta = type === "message_update" && ["text_delta", "thinking_delta", "toolcall_delta"].includes(ev.assistantMessageEvent?.type);
+    const now = performance.now();
+    if (boundary || (delta && now - this.telemetryEmittedAt >= 400)) {
+      this.telemetryEmittedAt = now;
+      this.emit({
+        sessionUpdate: "session_info_update",
+        _meta: { piAcp: { telemetry: {
+          live: this.telemetry.liveSnapshot(), reset: type === "agent_start",
+          ...(type === "agent_settled" ? { final: stats ?? null } : {})
+        } } }
+      });
+    }
     switch (type) {
+      case "processes_changed": {
+        this.emit({ sessionUpdate: "session_info_update", _meta: { piAcp: { processes: ev.state } } });
+        break;
+      }
+      case "message_end": {
+        const notice = processNotification(ev.message);
+        if (notice) this.emit({ sessionUpdate: "session_info_update", _meta: { piAcp: { processNotification: notice } } });
+        if (piMessageKey(ev.message)) this.emit(historyBoundary(ev.message));
+        if (ev.message?.role === "assistant") void this.publishContextUsage({ intermediate: true });
+        break;
+      }
       case "message_update": {
         const ame = ev.assistantMessageEvent;
         if (ame?.type === "text_delta" && typeof ame.delta === "string") {
@@ -989,31 +1203,38 @@ var PiAcpSession = class {
         });
         break;
       }
+      case "compaction_start":
       case "auto_compaction_start": {
-        this.emit({
-          sessionUpdate: "agent_message_chunk",
-          content: {
-            type: "text",
-            text: "Context nearing limit, running automatic compaction..."
-          }
-        });
+        this.compactionId = crypto.randomUUID();
+        this.emit({ sessionUpdate: "session_info_update", _meta: { piAcp: { compaction: {
+          id: this.compactionId, status: "running", at: Date.now(), reason: ev.reason || "threshold",
+        } } } });
         break;
       }
+      case "compaction_end":
       case "auto_compaction_end": {
-        this.emit({
-          sessionUpdate: "agent_message_chunk",
-          content: {
-            type: "text",
-            text: "Automatic compaction finished; context was summarized to continue the session."
-          }
-        });
+        const result = ev.result;
+        this.emit({ sessionUpdate: "session_info_update", _meta: { piAcp: { compaction: {
+          id: this.compactionId || crypto.randomUUID(),
+          status: ev.aborted ? "cancelled" : ev.errorMessage || !result ? "failed" : "completed",
+          at: Date.now(), reason: ev.reason || "threshold", error: ev.errorMessage,
+          summary: result?.summary, tokensBefore: result?.tokensBefore,
+          estimatedTokensAfter: result?.estimatedTokensAfter, firstKeptEntryId: result?.firstKeptEntryId,
+        } } } });
+        this.compactionId = null;
+        if (result && !ev.aborted && !ev.errorMessage) void this.publishContextUsage();
         break;
       }
       case "agent_start": {
+        if (!this.runActive) this.cancelRequested = false;
+        this.runRevision++;
+        this.runActive = true;
         this.inAgentLoop = true;
+        this.emit({ sessionUpdate: "session_info_update", _meta: { piAcp: { queueDepth: this.turnQueue.length, running: true } } });
         break;
       }
       case "turn_end": {
+        void this.publishContextUsage({ intermediate: true });
         break;
       }
       case "agent_end": {
@@ -1223,21 +1444,22 @@ function getPiSessionsDir() {
   const agentDir = getPiAgentDir();
   return readSessionDirFromSettings(agentDir) ?? join3(agentDir, "sessions");
 }
-async function walkJsonlFiles(dir, out) {
+async function walkJsonlFiles(dir, out, strict = false) {
   let entries;
   try {
     entries = await fsReaddir(dir, { withFileTypes: true, encoding: "utf8" });
-  } catch {
+  } catch (error) {
+    if (strict && error.code !== "ENOENT") throw error;
     return;
   }
   for (const e of entries) {
     const name = typeof e.name === "string" ? e.name : String(e.name);
     const p = join3(dir, name);
-    if (e.isDirectory()) await walkJsonlFiles(p, out);
+    if (e.isDirectory()) await walkJsonlFiles(p, out, strict);
     else if (e.isFile() && name.endsWith(".jsonl")) out.push(p);
   }
 }
-async function readFirstLine(path) {
+async function readFirstLine(path, strict = false) {
   let fh;
   try {
     fh = await fsOpen(path, "r");
@@ -1247,7 +1469,8 @@ async function readFirstLine(path) {
     const s = buf.subarray(0, bytesRead).toString("utf-8");
     const idx = s.indexOf("\n");
     return idx === -1 ? s.trim() : s.slice(0, idx).trim();
-  } catch {
+  } catch (error) {
+    if (strict) throw error;
     return null;
   } finally {
     try {
@@ -1446,18 +1669,24 @@ async function listPiSessions() {
   });
   return items;
 }
-async function findPiSession(sessionId) {
-  const all = await listPiSessions();
-  return all.find((s) => s.sessionId === sessionId) ?? null;
+async function findPiSession(sessionId, strict = false) {
+  // Locate by filename/header, not by rebuilding every title and transcript.
+  const files = []; await walkJsonlFiles(getPiSessionsDir(), files, strict);
+  const matching = files.filter((file) => file.endsWith(`_${sessionId}.jsonl`));
+  for (const file of [...matching, ...files.filter((file) => !matching.includes(file))]) {
+    let first;
+    try { first = await readFirstLine(file, strict); }
+    catch (error) { if (error.code === "ENOENT") continue; throw error; }
+    const header = parseSessionHeader(first);
+    if (strict && matching.includes(file) && header?.sessionId !== sessionId) throw new Error("会话文件头损坏或身份不匹配，未删除文件");
+    if (header?.sessionId === sessionId) return { ...header, sessionFile: file };
+  }
+  return null;
 }
 
 // src/acp/translate/pi-messages.ts
 function normalizePiMessageText(content) {
   if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content.map((c) => c?.type === "text" && typeof c.text === "string" ? c.text : "").filter(Boolean).join("");
-}
-function normalizePiAssistantText(content) {
   if (!Array.isArray(content)) return "";
   return content.map((c) => c?.type === "text" && typeof c.text === "string" ? c.text : "").filter(Boolean).join("");
 }
@@ -1898,24 +2127,10 @@ var PiAcpAgent = class {
       const args = parseCommandArgs(argsString);
       if (cmd === "compact") {
         const customInstructions = args.join(" ").trim() || void 0;
-        const res = await session.proc.compact(customInstructions);
-        const r = res && typeof res === "object" ? res : null;
-        const tokensBefore = typeof r?.tokensBefore === "number" ? r.tokensBefore : null;
-        const summary = typeof r?.summary === "string" ? r.summary : null;
-        const headerLines = [
-          `Compaction completed.${customInstructions ? " (custom instructions applied)" : ""}`,
-          tokensBefore !== null ? `Tokens before: ${tokensBefore}` : null
-        ].filter(Boolean);
-        const text = headerLines.join("\n") + (summary ? `
-
-${summary}` : "");
-        await this.conn.sessionUpdate({
-          sessionId: session.sessionId,
-          update: {
-            sessionUpdate: "agent_message_chunk",
-            content: { type: "text", text }
-          }
-        });
+        // The SDK emits compaction_start/end for manual and automatic runs.
+        // Use the same structured node instead of a second assistant bubble.
+        await session.proc.compact(customInstructions);
+        await session.flushEmits();
         return { stopReason: "end_turn" };
       }
       if (cmd === "session") {
@@ -2283,9 +2498,16 @@ ${JSON.stringify(stats, null, 2)}`;
     return { sessions, nextCursor, _meta: {} };
   }
   async loadSession(params) {
+    this.sessionLoads ||= new Map();
+    if (this.sessionLoads.has(params.sessionId)) return this.sessionLoads.get(params.sessionId);
+    const work = this.loadSessionData(params); this.sessionLoads.set(params.sessionId, work);
+    try { return await work; } finally { this.sessionLoads.delete(params.sessionId); }
+  }
+  async loadSessionData(params) {
     if (!isAbsolute3(params.cwd)) {
       throw RequestError3.invalidParams(`cwd must be an absolute path: ${params.cwd}`);
     }
+    this.sessions.maybeGet?.(params.sessionId)?.proc.assertNoBackgroundTasks?.();
     this.sessions.close(params.sessionId);
     this.lastSessionCwd = params.cwd;
     const stored = await this.findStoredSession(params.sessionId);
@@ -2312,91 +2534,9 @@ ${JSON.stringify(stats, null, 2)}`;
       cwd: params.cwd,
       sessionFile: stored.sessionFile
     });
-    const data = await proc.getMessages();
-    const messages = Array.isArray(data?.messages) ? data.messages : [];
-    for (const m of messages) {
-      const role = String(m?.role ?? "");
-      if (role === "user") {
-        const text = normalizePiMessageText(m?.content);
-        if (text) {
-          await this.conn.sessionUpdate({
-            sessionId: session.sessionId,
-            update: {
-              sessionUpdate: "user_message_chunk",
-              content: { type: "text", text }
-            }
-          });
-        }
-      }
-      if (role === "assistant") {
-        const text = normalizePiAssistantText(m?.content);
-        if (text) {
-          await this.conn.sessionUpdate({
-            sessionId: session.sessionId,
-            update: {
-              sessionUpdate: "agent_message_chunk",
-              content: { type: "text", text }
-            }
-          });
-        }
-      }
-      if (role === "toolResult") {
-        const toolName = String(m?.toolName ?? "tool");
-        const toolCallId = String(m?.toolCallId ?? crypto.randomUUID());
-        const isError = Boolean(m?.isError);
-        const isBash = isBashTool(toolName);
-        if (isBash) {
-          const text2 = bashResultText(m);
-          await this.conn.sessionUpdate({
-            sessionId: session.sessionId,
-            update: {
-              sessionUpdate: "tool_call",
-              toolCallId,
-              title: bashCommand(m) ?? toolName,
-              kind: "execute",
-              status: "completed",
-              content: bashTerminalContent(toolCallId),
-              _meta: bashTerminalInfoMeta(toolCallId, params.cwd)
-            }
-          });
-          await this.conn.sessionUpdate({
-            sessionId: session.sessionId,
-            update: {
-              sessionUpdate: "tool_call_update",
-              toolCallId,
-              status: isError ? "failed" : "completed",
-              _meta: {
-                ...text2 ? bashTerminalOutputMeta(toolCallId, text2) : {},
-                ...bashTerminalExitMeta(toolCallId, bashExitCode(m, isError))
-              }
-            }
-          });
-          continue;
-        }
-        await this.conn.sessionUpdate({
-          sessionId: session.sessionId,
-          update: {
-            sessionUpdate: "tool_call",
-            toolCallId,
-            title: toolName,
-            kind: toolName === "read" ? "read" : toolName === "write" || toolName === "edit" ? "edit" : "other",
-            status: "completed",
-            rawInput: null,
-            rawOutput: m
-          }
-        });
-        const text = toolResultToText(m);
-        await this.conn.sessionUpdate({
-          sessionId: session.sessionId,
-          update: {
-            sessionUpdate: "tool_call_update",
-            toolCallId,
-            status: isError ? "failed" : "completed",
-            content: text ? [{ type: "content", content: { type: "text", text } }] : null,
-            rawOutput: m
-          }
-        });
-      }
+    const data = await proc.getHistoryMessages();
+    for (const event of piHistoryEvents(data, params.cwd)) {
+      await this.conn.sessionUpdate({ sessionId: session.sessionId, update: event.update });
     }
     const response = {
       configOptions,
@@ -2439,21 +2579,28 @@ ${JSON.stringify(stats, null, 2)}`;
     return response;
   }
   async closeSession(params) {
+    this.sessions.maybeGet?.(params.sessionId)?.proc.assertNoBackgroundTasks?.();
     this.sessions.close(params.sessionId);
     return {};
   }
   async deleteSession(params) {
+    // A load already in flight must settle before deleting its resources,
+    // including a late load after its client-facing timeout.
+    await this.sessionLoads?.get(params.sessionId)?.catch(() => {});
+    await this.restoringSessions?.get(params.sessionId)?.catch(() => {});
     const stored = this.store.get(params.sessionId);
-    const piSession = await findPiSession(params.sessionId);
-    if (!stored && !piSession) {
-      return {};
+    const live = this.sessions.maybeGet(params.sessionId);
+    const sessionFile = stored?.sessionFile ?? live?.proc.session?.sessionManager.getSessionFile() ?? (await findPiSession(params.sessionId, true))?.sessionFile;
+    // Stop only this explicitly deleted session before unlinking. Otherwise an
+    // active turn can persist again and resurrect the supposedly deleted file.
+    if (live) {
+      await live.cancel();
+      await live.proc.dispose?.();
+      this.sessions.sessions.delete(params.sessionId);
     }
-    const sessionFile = stored?.sessionFile ?? piSession?.sessionFile;
     if (sessionFile) {
-      try {
-        if (existsSync4(sessionFile)) await unlinkAsync(sessionFile);
-      } catch {
-      }
+      try { await unlinkAsync(sessionFile); }
+      catch (error) { if (error.code !== "ENOENT") throw new Error("无法删除 Pi 会话文件，请检查远端文件权限或文件系统状态"); }
     }
     this.store.delete(params.sessionId);
     return {};
@@ -2801,4 +2948,4 @@ function readNearestPackageJson(metaUrl) {
   return { name: "pi-acp", version: "0.0.0" };
 }
 
-export { PiAcpAgent };
+export { PiAcpAgent, getPiSessionsDir };

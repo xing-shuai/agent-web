@@ -1,3 +1,4 @@
+import { t } from "./i18n.js";
 // Theme preference: "system" | "light" | "dark", persisted in localStorage.
 // `apply` sets <html data-theme>; call before first render to avoid a flash.
 
@@ -56,12 +57,12 @@ const SCHEME_KEY = "devin-web.scheme";
 // Dark palettes: `bg` is the scheme's main background, `c` its accent — the
 // swatch renders them split so a card previews the whole palette.
 export const SCHEMES = [
-  { id: "slate", name: "深灰", bg: "#191a1c", c: "#8ab4f8" },
-  { id: "ocean", name: "深空", bg: "#26303f", c: "#6ea8fe" },
-  { id: "warm", name: "暖灰", bg: "#2d2a27", c: "#f2a35e" },
-  { id: "violet", name: "雾紫", bg: "#2b2836", c: "#b79df5" },
-  { id: "moss", name: "苔绿", bg: "#272b27", c: "#7dd3a8" },
-  { id: "graphite", name: "石墨", bg: "#0f0f11", c: "#818cf8" },
+  { id: "slate", name: t("深灰"), bg: "#191a1c", c: "#8ab4f8" },
+  { id: "ocean", name: t("深空"), bg: "#26303f", c: "#6ea8fe" },
+  { id: "warm", name: t("暖灰"), bg: "#2d2a27", c: "#f2a35e" },
+  { id: "violet", name: t("雾紫"), bg: "#2b2836", c: "#b79df5" },
+  { id: "moss", name: t("苔绿"), bg: "#272b27", c: "#7dd3a8" },
+  { id: "graphite", name: t("石墨"), bg: "#0f0f11", c: "#818cf8" },
 ];
 
 export function getScheme() {
@@ -78,14 +79,14 @@ export function setScheme(id) {
 
 const VIEW_KEY = "devin-web.view";
 export const VIEWS = [
-  { value: "default", name: "默认", description: "标准聊天气泡布局" },
-  { value: "bubbles", name: "气泡", description: "双方消息都显示为气泡" },
-  { value: "cards", name: "卡片", description: "每条消息是独立卡片" },
-  { value: "timeline", name: "时间线", description: "左侧时间轴 + 节点" },
-  { value: "compact", name: "紧凑", description: "更小字号更密排布" },
-  { value: "terminal", name: "终端", description: "等宽字体命令行风格" },
-  { value: "notebook", name: "笔记", description: "Jupyter 式编号单元格" },
-  { value: "paper", name: "纸张", description: "横线稿纸 + 红色边距线" },
+  { value: "default", name: t("默认"), description: t("标准聊天气泡布局") },
+  { value: "bubbles", name: t("气泡"), description: t("双方消息都显示为气泡") },
+  { value: "cards", name: t("卡片"), description: t("每条消息是独立卡片") },
+  { value: "timeline", name: t("时间线"), description: t("左侧时间轴 + 节点") },
+  { value: "compact", name: t("紧凑"), description: t("更小字号更密排布") },
+  { value: "terminal", name: t("终端"), description: t("等宽字体命令行风格") },
+  { value: "notebook", name: t("笔记"), description: t("Jupyter 式编号单元格") },
+  { value: "paper", name: t("纸张"), description: t("横线稿纸 + 红色边距线") },
 ];
 
 export function getView() {
@@ -96,6 +97,7 @@ export function getView() {
 export function setView(id) {
   localStorage.setItem(VIEW_KEY, id);
   document.documentElement.dataset.view = getView();
+  window.dispatchEvent(new Event("dw-view"));
 }
 
 // Live-update when the OS theme flips while pref is "system".

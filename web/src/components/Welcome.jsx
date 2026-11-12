@@ -1,6 +1,9 @@
-import React, { useMemo } from "react";
-import { Sparkles, Plus, FolderOpen, Folder, Loader2, Menu } from "lucide-react";
+import React, { useMemo, useState } from "react";
+import { Plus, FolderOpen, Folder, Loader2, Menu, TerminalSquare, MessageSquare, ChevronRight } from "lucide-react";
+import ContextMenu from "./ContextMenu.jsx";
 import FullscreenButton from "./FullscreenButton.jsx";
+import { states as remoteStates } from "./RemoteHosts.jsx";
+import { t } from "../i18n.js";
 
 function shortPath(p) {
   if (!p) return "";
@@ -11,114 +14,98 @@ function shortPath(p) {
 function relTime(iso) {
   if (!iso) return "";
   const diff = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (diff < 60) return "刚刚";
-  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
-  return `${Math.floor(diff / 86400)} 天前`;
+  if (diff < 60) return t("刚刚");
+  if (diff < 3600) return t("{v0} 分钟前", { v0: Math.floor(diff / 60) });
+  if (diff < 86400) return t("{v0} 小时前", { v0: Math.floor(diff / 3600) });
+  return t("{v0} 天前", { v0: Math.floor(diff / 86400) });
 }
 
 function shortCwd(cwd, home) {
   if (!cwd) return "";
-  if (home && (cwd === home || cwd.startsWith(home + "/")))
-    return "~" + cwd.slice(home.length);
-  return cwd;
+  return home && (cwd === home || cwd.startsWith(home + "/")) ? "~" + cwd.slice(home.length) : cwd;
 }
 
-const baseName = (p) => {
-  const parts = String(p || "").split("/").filter(Boolean);
-  return parts[parts.length - 1] || p || "";
-};
+const baseName = (p) => String(p || "").split("/").filter(Boolean).at(-1) || p || "";
 
-export default function Welcome({ sessions, activeWorkspace, home, wsUp, creating, agents, agentPref, onPickAgent, onNewSession, onPickWorkspace, onOpenDrawer }) {
+export default function Welcome({ environmentName, host = "", hosts, onSelectHost, busy = false, sessions, loading = false, activeWorkspace, home, wsUp, creating, agents, onPickAgent, onNewSession, onOpenWorkspace, onOpenSession, onPickWorkspace, onOpenDrawer, onToggleTerminal, terminalOpen }) {
   const recent = useMemo(() => {
-    const m = new Map(); // cwd -> {count, latest}
-    for (const s of sessions || []) {
-      if (!s.cwd) continue;
-      const cur = m.get(s.cwd) || { count: 0, latest: "" };
-      cur.count++;
-      if ((s.updatedAt || "") > cur.latest) cur.latest = s.updatedAt;
-      m.set(s.cwd, cur);
+    const map = new Map();
+    for (const session of sessions || []) {
+      if (!session.cwd || session.archived || session.cwd === activeWorkspace) continue;
+      const value = map.get(session.cwd) || { count: 0, latest: "" };
+      value.count++;
+      if ((session.updatedAt || "") > value.latest) value.latest = session.updatedAt;
+      map.set(session.cwd, value);
     }
-    return [...m.entries()]
-      .map(([cwd, v]) => ({ cwd, ...v }))
-      .sort((a, b) => (b.latest || "").localeCompare(a.latest || ""))
-      .slice(0, 6);
-  }, [sessions]);
+    return [...map.entries()].map(([cwd, value]) => ({ cwd, ...value }))
+      .sort((a, b) => b.latest.localeCompare(a.latest)).slice(0, 6);
+  }, [sessions, activeWorkspace]);
+  const continued = useMemo(() => (sessions || []).filter((session) => !session.archived && (!activeWorkspace || session.cwd === activeWorkspace))
+    .sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || "")).slice(0, 8), [sessions, activeWorkspace]);
+  const [menu, setMenu] = useState(null);
+  const newSession = (event) => {
+    if (creating) return;
+    if (!activeWorkspace) return onPickWorkspace();
+    if ((agents?.length || 0) < 2) return onNewSession(activeWorkspace, agents?.[0]?.id);
+    const rect = event.currentTarget.getBoundingClientRect();
+    setMenu({ x: rect.left, y: rect.bottom + 4, items: agents.map((agent) => ({
+      label: t("新建 {v0} 会话", { v0: agent.name }), icon: Plus,
+      onClick: () => { onPickAgent?.(agent.id); onNewSession(activeWorkspace, agent.id); },
+    })) });
+  };
 
-  return (
-    <>
-      <div className="mobile-bar">
-        <button className="icon-ghost" title="会话列表" onClick={onOpenDrawer}>
-          <Menu size={18} />
-        </button>
-        <span className="mobile-bar-title">Agent Web</span>
-        <span className="mobile-bar-actions">
-          <FullscreenButton size={17} />
-          <button className="icon-ghost" title="新建会话" onClick={() => onNewSession()}>
-            <Plus size={18} />
-          </button>
-        </span>
-      </div>
-      <div className="welcome">
-      <div className="welcome-logo">
-        <Sparkles size={28} />
-      </div>
-      <h1>今天想在哪个项目上工作？</h1>
-      <p className="sub">选择一个工作区，或者直接在最近的目录中开始。</p>
-      {agents?.length > 1 && (
-        <div className="agent-seg">
-          {agents.map((a) => (
-            <button
-              key={a.id}
-              className={"agent-seg-opt" + (agentPref === a.id ? " cur" : "")}
-              onClick={() => onPickAgent?.(a.id)}
-            >
-              {a.name}
-            </button>
-          ))}
+  return <>
+    <div className="mobile-bar">
+      <button className="icon-ghost" title={t("会话列表")} onClick={onOpenDrawer}><Menu size={18} /></button>
+      <span className="mobile-bar-title">Agent Web</span>
+      <span className="mobile-bar-actions"><FullscreenButton size={17} /></span>
+    </div>
+    <div className="welcome">
+      <header className="welcome-header">
+        <div className="welcome-heading">
+          <h1 title={activeWorkspace}>{environmentName && <span className="remote-title">{environmentName}</span>}{activeWorkspace ? baseName(activeWorkspace) : t("继续你的工作")}</h1>
+          <p className="sub">{activeWorkspace ? t("选择会话继续，或开启新的任务。") : t("打开最近会话，或选择一个工作区开始。")}</p>
         </div>
-      )}
-      <div className="welcome-actions">
-        {activeWorkspace && (
-          <button className="primary" disabled={!!creating} onClick={() => onNewSession()}>
-            {creating ? <Loader2 size={15} className="spin" /> : <Plus size={15} />}
-            {creating ? "创建中…" : `在 ${shortPath(activeWorkspace)} 中新建会话`}
+        <div className="welcome-head-actions">
+          {(hosts?.length > 0 || host !== "") && <select className="welcome-host" aria-label={t("窗格开发环境")} disabled={busy} value={host} onChange={(e) => onSelectHost?.(e.target.value)}>
+          <option value="">{t("本机")}</option>
+          {(hosts || []).map((h) => {
+            const transitional = ["connecting", "reconnecting", "starting", "inspecting", "installing"].includes(h.state);
+            return <option key={h.id} value={h.id} disabled={transitional}>{h.label || h.hostname}{h.state === "connected" ? "" : t("（{v0}，选择以连接）", { v0: remoteStates[h.state] || h.state })}</option>;
+          })}
+          {host && !(hosts || []).some((h) => h.id === host) && <option value={host}>{t("未知远程主机")}</option>}
+        </select>}
+          <button type="button" className="primary welcome-new" disabled={!!creating} onClick={newSession}>
+            {creating ? <Loader2 size={15} className="spin" /> : activeWorkspace ? <Plus size={15} /> : <FolderOpen size={15} />}
+            {creating ? t("创建中…") : activeWorkspace ? t("新建会话") : t("选择工作区")}
           </button>
-        )}
-        <button className="secondary" onClick={onPickWorkspace}>
-          <FolderOpen size={15} /> 选择工作区
-        </button>
-      </div>
-      {recent.length > 0 && (
-        <>
-          <div className="recent-label">最近的工作区</div>
-          <div className="recent-grid">
-            {recent.map((r) => (
-              <div
-                key={r.cwd}
-                className="ws-card"
-                onClick={() => onNewSession(r.cwd)}
-                title={r.cwd}
-              >
-                <Folder size={17} className="ws-card-ic" />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div className="ws-card-name">{baseName(shortCwd(r.cwd, home)) || r.cwd}</div>
-                  <div className="ws-card-path">{shortPath(shortCwd(r.cwd, home))}</div>
-                  <div className="ws-card-meta">
-                    {r.count} 个会话{r.latest ? ` · ${relTime(r.latest)}` : ""}
-                  </div>
-                </div>
-              </div>
-            ))}
+        </div>
+      </header>
+      <section className="project-sessions" aria-label={t("继续会话")}>
+        <div className="welcome-section-head">
+          <h2>{t("继续会话")}</h2>
+          <div className="welcome-actions">
+            {activeWorkspace && <button type="button" onClick={onPickWorkspace}><FolderOpen size={14} />{t("切换工作区")}</button>}
+            {onToggleTerminal && <button type="button" data-terminal-toggle="" onClick={onToggleTerminal} aria-expanded={terminalOpen}><TerminalSquare size={14} />{t("终端")}</button>}
           </div>
-        </>
-      )}
-      {!wsUp && (
-        <div className="conn-hint">
-          <Loader2 size={13} className="spin" /> 正在连接后端…
         </div>
-      )}
-      </div>
-    </>
-  );
+        {loading ? <p className="welcome-empty" role="status"><Loader2 size={13} className="spin" /> {t("正在加载会话…")}</p>
+          : continued.length ? continued.map((session) => <button key={session.sessionId} type="button" className="project-session" onClick={() => onOpenSession(session)} title={session.title || session.sessionId}>
+            <MessageSquare size={15} /><span>{session.title || session.sessionId}</span>
+            <small>{session.agent === "devin" ? "de" : session.agent || "de"} · {relTime(session.updatedAt)}</small><ChevronRight size={14} />
+          </button>) : <p className="welcome-empty">{activeWorkspace ? t("此工作区还没有会话，点击上方「新建会话」开始。") : t("还没有最近会话，先选择一个工作区。")}</p>}
+      </section>
+      {recent.length > 0 && <section className="recent-workspaces" aria-label={t("最近工作区")}>
+        <div className="welcome-section-head"><h2>{activeWorkspace ? t("其他最近工作区") : t("最近工作区")}</h2></div>
+        {recent.map((workspace) => <button type="button" key={workspace.cwd} className="ws-card" onClick={() => onOpenWorkspace(workspace.cwd)} title={workspace.cwd}>
+          <Folder size={15} className="ws-card-ic" />
+          <span className="ws-card-name">{baseName(workspace.cwd)}</span>
+          <span className="ws-card-path">{shortPath(shortCwd(workspace.cwd, home))}</span>
+          <small className="ws-card-meta">{t("{v0} 个会话", { v0: workspace.count })}</small><ChevronRight size={14} />
+        </button>)}
+      </section>}
+      {!wsUp && <div className="conn-hint" role="status"><Loader2 size={13} className="spin" />{t("正在连接后端…")}</div>}
+    </div>
+    <ContextMenu menu={menu} onClose={() => setMenu(null)} />
+  </>;
 }

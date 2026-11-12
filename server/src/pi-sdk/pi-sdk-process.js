@@ -22,6 +22,7 @@ import {
   getAgentDir,
   initTheme,
 } from "@earendil-works/pi-coding-agent";
+import { createProcessResources, processError, processSettingsForWeb } from "./processes.js";
 
 // Internal (non-exported) pi modules — the package `exports` map only
 // exposes "." so these are imported by absolute file URL from the
@@ -36,6 +37,7 @@ const { configureHttpDispatcher, applyHttpProxySettings } = await import(
   piInternal("core/http-dispatcher.js")
 );
 const { toJsonEvent } = await import(piInternal("modes/json-event.js"));
+const { estimateProjectedContextTokens } = await import(piInternal("core/compaction/index.js"));
 const { theme } = await import(piInternal("modes/interactive/theme/theme.js"));
 
 // PI_CODING_AGENT_SESSION_DIR (same env var main() consults).
@@ -93,13 +95,15 @@ export class PiSdkProcess {
       const projectTrusted =
         !hasTrustRequiringProjectResources(cwd) || trustStore.get(cwd) === true;
       const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted });
+      const { processes, resourceLoaderOptions } = createProcessResources(builtInExtensions);
       const services = await createAgentSessionServices({
         cwd,
         agentDir,
-        settingsManager,
+        settingsManager: processSettingsForWeb(settingsManager),
         modelRuntimeSignal: AbortSignal.timeout(15_000),
-        resourceLoaderOptions: { extensionFactories: builtInExtensions },
+        resourceLoaderOptions,
       });
+      services.processes = processes;
       const created = await createAgentSessionFromServices({
         services,
         sessionManager,
@@ -117,7 +121,7 @@ export class PiSdkProcess {
     // import) — same hook rpc-mode registers; without it the event
     // subscription stays bound to the invalidated old session.
     runtime.setRebindSession(() => proc.rebindSession());
-    await proc.rebindSession();
+    try { await proc.rebindSession(); } catch (error) { await runtime.dispose(); throw error; }
     // Same as the old spawn path: make sure the session file's parent dir
     // exists so writes don't fail later.
     try {
@@ -145,6 +149,7 @@ export class PiSdkProcess {
   async rebindSession() {
     const session = (this.session = this.runtime.session);
     const uiContext = this.createExtensionUIContext();
+    if (this.processes) this.processes.onChange = (state) => this.emit({ type: "processes_changed", state });
     await session.bindExtensions({
       uiContext,
       mode: "rpc",
@@ -156,6 +161,7 @@ export class PiSdkProcess {
           return { cancelled: result.cancelled };
         },
         navigateTree: async (targetId, options) => {
+          this.assertNoBackgroundTasks();
           const result = await session.navigateTree(targetId, {
             summarize: options?.summarize,
             customInstructions: options?.customInstructions,
@@ -167,6 +173,7 @@ export class PiSdkProcess {
         switchSession: async (sessionPath, options) =>
           this.runtime.switchSession(sessionPath, options),
         reload: async () => {
+          this.assertNoBackgroundTasks();
           await session.reload();
         },
       },
@@ -180,9 +187,21 @@ export class PiSdkProcess {
         });
       },
     });
+    if (process.platform !== "win32" && this.processes) this.processes.request("list");
     this.unsubscribe?.();
     this.unsubscribe = session.subscribe((event) => {
-      this.emit(toJsonEvent(event));
+      const json = toJsonEvent(event);
+      // JSON mode deliberately strips partial messages. Keep only the current
+      // tool block so ACP can render generated commands/arguments accurately,
+      // without shipping an ever-growing assistant message on every delta.
+      if (event.type === "message_update") {
+        const ame = event.assistantMessageEvent;
+        const block = ame.partial?.content?.[ame.contentIndex];
+        if (block?.type === "toolCall") json.assistantMessageEvent = {
+          ...json.assistantMessageEvent, toolCall: structuredClone(block),
+        };
+      }
+      this.emit(json);
     });
   }
 
@@ -390,7 +409,14 @@ export class PiSdkProcess {
   }
 
   async abort() {
+    // Deliberately does not stop managed background tasks.
     await this.session.abort();
+  }
+
+  get processes() { return this.runtime.services?.processes; }
+
+  assertNoBackgroundTasks() {
+    if (this.processes?.busy) throw processError(409, "PROCESS_BUSY", "有后台任务正在运行或正在交付结果，请先停止或等待任务完成");
   }
 
   async getState() {
@@ -453,6 +479,21 @@ export class PiSdkProcess {
     return (await this.session.getSessionStats()) ?? {};
   }
 
+  // Context only: avoid scanning lifetime billing totals at every response.
+  // The SDK intentionally returns null tokens after compaction. Estimate only
+  // the active model projection, never the raw transcript or a sibling branch.
+  async getContextUsage() {
+    const usage = this.session.getContextUsage();
+    if (!usage?.contextWindow) return undefined;
+    const manager = this.session.sessionManager;
+    const branch = manager.getBranch();
+    const estimate = estimateProjectedContextTokens(manager.buildSessionProjection(), branch);
+    const estimated = usage.tokens == null || estimate.lastUsageIndex == null || estimate.trailingTokens > 0;
+    return { ...usage, tokens: usage.tokens ?? estimate.tokens, estimated,
+      source: !estimated ? "provider" : estimate.lastUsageIndex != null ? "mixed" :
+        branch.some((entry) => entry.type === "compaction") ? "compaction" : "estimate" };
+  }
+
   async setSessionName(name) {
     const trimmed = String(name ?? "").trim();
     if (!trimmed) throw new Error("Session name cannot be empty");
@@ -473,6 +514,13 @@ export class PiSdkProcess {
 
   async getMessages() {
     return { messages: this.session.messages };
+  }
+
+  /** UI transcript, not model context: compaction/context edits must not erase
+   * recorded conversation. Follow only the active branch, never sibling turns. */
+  async getHistoryMessages() {
+    const entries = this.session.sessionManager.getBranch();
+    return { entries, messages: entries.filter((entry) => entry.type === "message").map((entry) => entry.message) };
   }
 
   async getCommands() {

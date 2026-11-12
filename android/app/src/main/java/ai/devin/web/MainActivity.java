@@ -22,7 +22,11 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
-import android.webkit.JavascriptInterface;
+import android.webkit.WebMessage;
+import android.webkit.WebMessagePort;
+import org.json.JSONObject;
+import org.json.JSONArray;
+import java.util.UUID;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.ValueCallback;
@@ -61,6 +65,10 @@ public class MainActivity extends Activity {
     private WebChromeClient.CustomViewCallback fullscreenCb;
     private ValueCallback<Uri[]> fileCb;
     private SharedPreferences prefs;
+    private WebMessagePort nativePort;
+    private String appOrigin;
+    private final java.util.concurrent.ThreadPoolExecutor exports = new java.util.concurrent.ThreadPoolExecutor(
+            1, 1, 0L, java.util.concurrent.TimeUnit.MILLISECONDS, new java.util.concurrent.ArrayBlockingQueue<>(1));
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -81,6 +89,7 @@ public class MainActivity extends Activity {
     // ---------- setup screen (server URL entry) ----------
 
     private void showSetup(String error) {
+        closeNativePort();
         if (web != null) { root.removeView(web); web.destroy(); web = null; }
         if (setupView != null) root.removeView(setupView);
 
@@ -152,12 +161,20 @@ public class MainActivity extends Activity {
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
         s.setMediaPlaybackRequiresUserGesture(false);
-        web.addJavascriptInterface(new Bridge(), "DevinNative");
+        // Never expose a Java interface to every child frame. A private port
+        // is transferred only to the configured origin's top-level app page.
+        appOrigin = originOf(url);
+        s.setAllowFileAccess(false);
+        s.setAllowContentAccess(false);
         web.setWebViewClient(new WebViewClient() {
             @Override
+            public void onPageStarted(WebView v, String u, android.graphics.Bitmap icon) {
+                closeNativePort();
+            }
+
+            @Override
             public void onPageFinished(WebView v, String u) {
-                v.evaluateJavascript(NOTIF_SHIM, null);
-                v.evaluateJavascript(BARS_SHIM, null);
+                connectNativePort(v, u);
             }
 
             @Override
@@ -308,6 +325,74 @@ public class MainActivity extends Activity {
         return s == null ? "" : s.replace("\\", "\\\\").replace("'", "\\'");
     }
 
+    private String originOf(String url) {
+        Uri uri = Uri.parse(url);
+        if (!("http".equals(uri.getScheme()) || "https".equals(uri.getScheme())) || uri.getAuthority() == null || uri.getAuthority().contains("@")) return "";
+        String host = uri.getHost();
+        if (host == null) return "";
+        host = host.toLowerCase(java.util.Locale.ROOT);
+        if (host.contains(":") && !host.startsWith("[")) host = "[" + host + "]";
+        int port = uri.getPort();
+        boolean defaultPort = port < 0 || ("http".equals(uri.getScheme()) && port == 80) || ("https".equals(uri.getScheme()) && port == 443);
+        return uri.getScheme() + "://" + host + (defaultPort ? "" : ":" + port);
+    }
+
+    private boolean isAppPage(String url) {
+        if (url == null || appOrigin == null || appOrigin.isEmpty() || !appOrigin.equals(originOf(url))) return false;
+        String p = Uri.parse(url).getPath();
+        return p == null || p.isEmpty() || p.equals("/") || p.equals("/index.html");
+    }
+
+    private void closeNativePort() {
+        if (nativePort != null) { nativePort.close(); nativePort = null; }
+    }
+
+    private void connectNativePort(WebView view, String url) {
+        if (view != web || !isAppPage(url)) return;
+        closeNativePort();
+        WebMessagePort[] ports = view.createWebMessageChannel();
+        nativePort = ports[0];
+        WebMessagePort current = nativePort;
+        Bridge bridge = new Bridge();
+        current.setWebMessageCallback(new WebMessagePort.WebMessageCallback() {
+            @Override public void onMessage(WebMessagePort port, WebMessage message) {
+                if (nativePort != current || view != web || !isAppPage(view.getUrl())) return;
+                String data = message.getData();
+                if (data == null || data.length() > 64 * 1024 * 1024) return;
+                try {
+                    JSONObject request = new JSONObject(data);
+                    JSONArray args = request.optJSONArray("args");
+                    if (args == null) return;
+                    switch (request.optString("method")) {
+                        case "sysBars": bridge.sysBars(args.optString(0)); break;
+                        case "notify": bridge.notify(args.optString(0), args.optString(1), args.optString(2)); break;
+                        case "saveBlob":
+                            String bytes = args.optString(0), name = args.optString(1), mime = args.optString(2);
+                            try { exports.execute(() -> bridge.saveBlob(bytes, name, mime)); }
+                            catch (java.util.concurrent.RejectedExecutionException busy) { Toast.makeText(MainActivity.this, "导出任务繁忙，请稍后重试", Toast.LENGTH_SHORT).show(); }
+                            break;
+                    }
+                } catch (Exception ignored) { /* reject malformed/unrecognized calls */ }
+            }
+        });
+        String nonce = UUID.randomUUID().toString();
+        String shim = "(()=>{if(window!==top)return;const key=" + JSONObject.quote(nonce) + ";"
+                + "const receive=e=>{if(e.data!==key||!e.ports[0]||(e.source&&e.source!==window))return;"
+                + "window.removeEventListener('message',receive);const p=e.ports[0];"
+                + "const send=(method,args)=>p.postMessage(JSON.stringify({method,args}));let permission=" + JSONObject.quote(bridge.notifPerm()) + ";"
+                + "p.onmessage=e=>{try{const m=JSON.parse(e.data);if(m.event==='permission'&&['granted','denied'].includes(m.value))permission=m.value;}catch(_){}};"
+                + "window.DevinNative=Object.freeze({sysBars:c=>send('sysBars',[c]),"
+                + "notify:(t,b,g)=>send('notify',[t,b,g]),saveBlob:(b,n,m)=>send('saveBlob',[b,n,m]),"
+                + "notifPerm:()=>permission});"
+                + "window.__DEVIN_NATIVE_PREVIEW_SAFE__=true;" + NOTIF_SHIM + BARS_SHIM
+                + "};window.addEventListener('message',receive);})()";
+        view.evaluateJavascript(shim, ignored -> {
+            if (view == web && nativePort == current && isAppPage(view.getUrl()))
+                view.postWebMessage(new WebMessage(nonce, new WebMessagePort[]{ports[1]}), Uri.parse(appOrigin));
+            else ports[1].close();
+        });
+    }
+
     // WebView lacks the Notification API — shim it over the JS bridge.
     private static final String NOTIF_SHIM =
             "if(!window.Notification){"
@@ -317,13 +402,11 @@ public class MainActivity extends Activity {
             + "}";
 
     class Bridge {
-        @JavascriptInterface
         public void sysBars(String css) {
             int c = parseCssColor(css);
             if (c != 0) runOnUiThread(() -> applySysBars(c));
         }
 
-        @JavascriptInterface
         public String notifPerm() {
             if (Build.VERSION.SDK_INT < 33
                     || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED)
@@ -331,7 +414,6 @@ public class MainActivity extends Activity {
             return "denied";
         }
 
-        @JavascriptInterface
         public void notify(String title, String body, String tag) {
             if (!"granted".equals(notifPerm())) return;
             NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
@@ -346,8 +428,9 @@ public class MainActivity extends Activity {
             nm.notify(id, n);
         }
 
-        @JavascriptInterface
         public void saveBlob(String base64, String name, String mime) {
+            name = new File(name.replace('\\', '/')).getName();
+            if (name.isEmpty() || name.equals(".") || name.equals("..")) name = "export.txt";
             if (base64.isEmpty()) {
                 runOnUiThread(() -> Toast.makeText(MainActivity.this, "导出失败", Toast.LENGTH_SHORT).show());
                 return;
@@ -410,7 +493,17 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        if (nativePort != null && web != null && isAppPage(web.getUrl())) {
+            nativePort.postMessage(new WebMessage("{\"event\":\"permission\",\"value\":" + JSONObject.quote(new Bridge().notifPerm()) + "}"));
+        }
+    }
+
+    @Override
     protected void onDestroy() {
+        closeNativePort();
+        exports.shutdown();
         if (web != null) web.destroy();
         super.onDestroy();
     }

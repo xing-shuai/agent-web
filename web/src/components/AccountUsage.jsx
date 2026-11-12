@@ -1,16 +1,18 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Gauge, RefreshCw } from "lucide-react";
-import api from "../api.js";
+import { useLayer } from "../layers.js";
+import { useEnvironment } from "../environmentContext.js";
+import { t } from "../i18n.js";
 
 const fmtReset = (ts) => {
   if (!ts) return "";
   const diff = ts - Date.now();
-  if (diff <= 0) return "即将重置";
+  if (diff <= 0) return t("即将重置");
   const h = Math.floor(diff / 3.6e6);
   const dd = Math.floor(h / 24);
-  if (dd > 0) return `${dd} 天后重置`;
-  if (h > 0) return `${h} 小时后重置`;
-  return `${Math.max(1, Math.floor(diff / 60000))} 分钟后重置`;
+  if (dd > 0) return t("{v0} 天后重置", { v0: dd });
+  if (h > 0) return t("{v0} 小时后重置", { v0: h });
+  return t("{v0} 分钟后重置", { v0: Math.max(1, Math.floor(diff / 60000)) });
 };
 
 const cls = (pct) => (pct <= 10 ? "red" : pct <= 30 ? "amber" : "");
@@ -57,8 +59,7 @@ function SourceSection({ src }) {
           ))}
           {src.period?.end && (
             <div className="acct-sub">
-              计费周期 {src.period.start ? new Date(src.period.start).toLocaleDateString() : "?"} ~{" "}
-              {new Date(src.period.end).toLocaleDateString()}
+              {t("计费周期 {v0} ~ {v1}", { v0: src.period.start ? new Date(src.period.start).toLocaleDateString() : "?", v1: new Date(src.period.end).toLocaleDateString() })}
             </div>
           )}
         </>
@@ -72,6 +73,7 @@ function SourceSection({ src }) {
  *  devin sessions, the pi provider for pi sessions; global lowest otherwise).
  *  Clicking opens a popover with every source's detail. 5 min refresh. */
 export default function AccountUsage({ agent, provider }) {
+  const { api } = useEnvironment();
   const [data, setData] = useState(null);
   const [open, setOpen] = useState(false);
   const [err, setErr] = useState(null);
@@ -92,14 +94,7 @@ export default function AccountUsage({ agent, provider }) {
     return () => clearInterval(t);
   }, []);
 
-  useEffect(() => {
-    if (!open) return;
-    const close = (e) => {
-      if (!ref.current?.contains(e.target)) setOpen(false);
-    };
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, [open]);
+  useLayer({ open, ref, onClose: () => setOpen(false), initialFocus: false });
 
   const sources = data?.sources || [];
   if (err || sources.length === 0) return null;
@@ -118,18 +113,21 @@ export default function AccountUsage({ agent, provider }) {
   const rowPool = shown ? shown.rows || [] : sources.flatMap((s) => s.rows || []);
   const lowRow = rowPool.filter((r) => Number.isFinite(r.remaining)).sort((a, b) => a.remaining - b.remaining)[0];
   const lowCls = lowRow ? cls(lowRow.remaining) : "";
+  const title = t("{v0}用量{v1}", { v0: shown?.name || t("账户"), v1: lowRow ? t(" · {v0}剩余 {v1}%", { v0: lowRow.label || lowRow.short || t("额度"), v1: lowRow.remaining }) : "" });
 
   return (
     <div className="acct-pop" ref={ref}>
       <button
         className={"icon-ghost acct-btn" + (open ? " on" : "")}
-        title={`${shown?.name || "账户"}用量`}
+        title={title}
+        aria-label={title}
+        aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
       >
         <Gauge size={15} />
         {lowRow ? (
           <span className={"acct-lowest " + lowCls}>
-            {lowRow.short} {lowRow.remaining}%
+            <span className="acct-period">{lowRow.short} </span><span className="acct-value">{lowRow.remaining}%</span>
           </span>
         ) : (
           shown?.mini && <span className="acct-lowest">{shown.mini}</span>
@@ -141,7 +139,7 @@ export default function AccountUsage({ agent, provider }) {
             <SourceSection key={src.id} src={src} />
           ))}
           <button className="acct-reload" onClick={load}>
-            <RefreshCw size={11} /> 刷新
+            <RefreshCw size={11} /> {t("刷新")}
           </button>
         </div>
       )}

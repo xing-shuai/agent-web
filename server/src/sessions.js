@@ -1,17 +1,20 @@
+import { createHash, randomUUID } from "node:crypto";
+import { HISTORY_ENCODING, HISTORY_ENCODING_V2, packHistoryEvents } from "./history-wire.js";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { EventEmitter } from "node:events";
 import { piUsageStats } from "./pi-stats.js";
+import { treeError } from "./pi-sdk/session-tree.js";
+import { processError } from "./pi-sdk/processes.js";
+import { scratchRoot, isScratchDir, isScratchDirLexical } from "./scratch.js";
 
 const MAX_BUFFERED_EVENTS = 8000;
 // Event payloads can each carry multi-hundred-KB outputs — cap the replay
 // buffer by bytes too, not just count (drop oldest, keep ≥100 tail events).
-// Byte budget for one session's buffered transcript. Long sessions easily
-// exceed 8 MB of text (thought chunks are large), and crossing the cap
-// head-evicts the *oldest* events — which used to silently delete early
-// history (incl. persisted images). 32 MB covers very long transcripts while
-// still bounding per-session memory.
+// This is a bounded delivery cache, NOT authoritative Pi transcript storage.
+// Coalesce streamed deltas/snapshots; if evicted, rebuild browser history from
+// the raw active branch plus the unfinished live tail, without session/load.
 const MAX_BUFFERED_BYTES = 32 * 1024 * 1024;
 // Fallback freshness windows for activity detection: streaming commits tick
 // every few seconds, so 25s still means "generating"; without probe data a
@@ -87,6 +90,49 @@ try {
  * client subscribes or prompts; all session/update notifications are
  * buffered so late-joining browsers can replay the transcript.
  */
+/** Move a workspace to the front of the MRU list, capping the list.
+ *  Returns the new list, or null when the order already matches. */
+export const devinDbPath = () => process.env.DEVIN_SESSIONS_DB || path.join(os.homedir(), ".local/share/devin/cli/sessions.db");
+
+export function pushWorkspace(workspaces, dir, max = 50) {
+  const index = workspaces.indexOf(dir);
+  if (index === 0) return null;
+  const next = [dir, ...(index < 0 ? workspaces : workspaces.filter((w) => w !== dir))];
+  return next.slice(0, max);
+}
+
+// Unknown raster headers retain the original inline representation. Known
+// dimensions reserve the exact thumbnail geometry before lazy HTTP loading.
+function imageDimensions(mime, data) {
+  const b = Buffer.from(data.slice(0, mime === "image/jpeg" ? 256 * 1024 : 64), "base64");
+  let width, height;
+  if (mime === "image/png" && b.length >= 24 && b.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
+    width = b.readUInt32BE(16); height = b.readUInt32BE(20);
+  } else if (mime === "image/gif" && b.length >= 10 && /^GIF8[79]a$/.test(b.toString("ascii", 0, 6))) {
+    width = b.readUInt16LE(6); height = b.readUInt16LE(8);
+  } else if (mime === "image/webp" && b.length >= 30 && b.toString("ascii", 0, 4) === "RIFF" && b.toString("ascii", 8, 12) === "WEBP") {
+    const kind = b.toString("ascii", 12, 16);
+    if (kind === "VP8X" && (b[20] & 8)) return null; // EXIF orientation: keep native inline sizing.
+    if (kind === "VP8X") { width = 1 + b.readUIntLE(24, 3); height = 1 + b.readUIntLE(27, 3); }
+    else if (kind === "VP8L" && b[20] === 0x2f) { width = 1 + (b[21] | ((b[22] & 63) << 8)); height = 1 + ((b[22] >> 6) | (b[23] << 2) | ((b[24] & 15) << 10)); }
+    else if (kind === "VP8 " && b.subarray(23, 26).equals(Buffer.from([157, 1, 42]))) { width = b.readUInt16LE(26) & 16383; height = b.readUInt16LE(28) & 16383; }
+  } else if (mime === "image/jpeg" && b.length >= 4 && b.readUInt16BE(0) === 0xffd8) {
+    for (let pos = 2; pos + 3 < b.length;) {
+      if (b[pos++] !== 0xff) break;
+      while (b[pos] === 0xff) pos++;
+      const marker = b[pos++];
+      if (marker === 0xd9 || marker === 0xda || pos + 2 > b.length) break;
+      if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd8)) continue;
+      const len = b.readUInt16BE(pos);
+      if (len < 2 || pos + len > b.length) break;
+      if (marker === 0xe1 && len >= 8 && b.toString("ascii", pos + 2, pos + 8) === "Exif\0\0") return null;
+      if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker) && len >= 8) { height = b.readUInt16BE(pos + 3); width = b.readUInt16BE(pos + 5); }
+      pos += len;
+    }
+  }
+  return width > 0 && height > 0 && width <= 32768 && height <= 32768 ? { width, height } : null;
+}
+
 export class SessionHub extends EventEmitter {
   constructor(acp, statePath, { agent = "devin", devinExt = true } = {}) {
     super();
@@ -97,6 +143,12 @@ export class SessionHub extends EventEmitter {
     /** @type {Map<string, {id:string, cwd:string, attached:boolean, attaching:Promise|null, events:Array, subscribers:Set, pendingPermissions:Map, prompting:number, title?:string}>} */
     this.sessions = new Map();
     this.imgCache = new Map();
+    this.historyImageCache = new Map(); this.historyImageBytes = 0;
+    this.historyEpoch = randomUUID();
+    this.historyCheckpoints = new Map(); this.historyCheckpointBytes = 0;
+    this.promptReceipts = new Map();
+    this._slotReservations = new Set();
+    this._capacityGate = Promise.resolve();
     this.state = this.#loadState();
     // available_commands_update is an ACP session-level event — the sqlite
     // mirror can't produce it, and replay doesn't always carry it either.
@@ -125,10 +177,7 @@ export class SessionHub extends EventEmitter {
           // Replay from an in-flight session/load — collected separately,
           // swapped into s.events wholesale on success, dropped on failure
           // so a failed attach never clobbers the mirrored buffer.
-          evt._sz = JSON.stringify(evt.update).length;
-          s.replayEvents.push(evt);
-          if (s.replayEvents.length > MAX_BUFFERED_EVENTS)
-            s.replayEvents.splice(0, s.replayEvents.length - MAX_BUFFERED_EVENTS);
+          this.#pushEvent(s, evt, s.replayEvents, "replayBytes");
         } else if (s.attached) {
           this.#pushEvent(s, evt, s.events);
         }
@@ -151,17 +200,24 @@ export class SessionHub extends EventEmitter {
           this.#cappedSet(this.usageById, sessionId, update, MAX_USAGE_CACHE);
           this.state.usageById = Object.fromEntries(this.usageById);
           this.#saveState();
-          // pi's usage_update lands at turn settle — the session jsonl is
-          // complete at that point, so refresh the aggregate totals too.
-          this.#refreshPiStats(s);
+          // Live context samples arrive per response/tool batch. Refresh the
+          // lifetime JSONL billing totals only at load/compaction/settle.
+          if (!update._meta?.piAcp?.contextUsage?.intermediate) this.#refreshPiStats(s);
         }
         s.lastActiveAt = Date.now();
+        const running = update?._meta?.piAcp?.running;
+        if (typeof running === "boolean") {
+          s.sdkRunning = running;
+          if (s.attached && !s.attaching) this.#broadcast(s.id, { type: "session_state", sessionId: s.id, state: this.stateOf(s.id) }, { global: true });
+          if (!running && !this.#isRunning(s) && s.queue.length) queueMicrotask(() => { if (!this.#isRunning(s)) this.#drainQueue(s); });
+        }
       }
       // Only stream live updates for sessions we actually hold — replay is
       // delivered as one consolidated `history` once attach resolves, and
       // post-failure stragglers must not broadcast (their gen would
       // ping-pong the client's transcript reset).
       if (s && (s.attaching || !s.attached)) return;
+      if (update?._meta?.piAcp?.historyBoundary) return;
       this.#broadcast(
         sessionId,
         { type: "session_update", sessionId, update, gen: s?.gen ?? 0 },
@@ -334,7 +390,9 @@ export class SessionHub extends EventEmitter {
     for (const s of this.sessions.values()) {
       if (
         s.attached &&
-        !s.prompting &&
+        !this.#isRunning(s) &&
+        !this.#hasBackground(s) &&
+        !s.treeNavigating &&
         !s.attaching &&
         s.pendingPermissions.size === 0 &&
         s.pendingElicitations.size === 0 &&
@@ -350,6 +408,7 @@ export class SessionHub extends EventEmitter {
       // is allowed.
       if (
         s.prompting > 0 &&
+        !this.acp.sessionActivity?.(s.id)?.running &&
         s.pendingPermissions.size === 0 &&
         s.pendingElicitations.size === 0 &&
         now - (s.lastActiveAt || 0) > TURN_STALL_MS
@@ -379,21 +438,15 @@ export class SessionHub extends EventEmitter {
     // abandoned attach can't grow agent-side memory forever. Unsubscribed
     // sessions go first — detaching one nobody watches is invisible; the
     // next subscribe just re-attaches it.
-    const attachable = [...this.sessions.values()].filter(
-      (s) =>
-        s.attached &&
-        !s.prompting &&
-        !s.attaching &&
-        s.pendingPermissions.size === 0 &&
-        s.pendingElicitations.size === 0
-    );
-    if (attachable.length > MAX_ATTACHED_SESSIONS) {
+    const attachable = [...this.sessions.values()].filter((s) => this.#evictable(s));
+    const excess = [...this.sessions.values()].filter((s) => s.attached).length - MAX_ATTACHED_SESSIONS;
+    if (excess > 0) {
       attachable.sort(
         (a, b) =>
           Number(a.subscribers.size > 0) - Number(b.subscribers.size > 0) ||
           (a.lastActiveAt || 0) - (b.lastActiveAt || 0)
       );
-      for (const s of attachable.slice(0, attachable.length - MAX_ATTACHED_SESSIONS)) {
+      for (const s of attachable.slice(0, excess)) {
         console.log(`[devin-web] evicting attached session ${s.id} (cap ${MAX_ATTACHED_SESSIONS})`);
         this.closeSession(s.id).catch(() => {});
       }
@@ -464,8 +517,9 @@ export class SessionHub extends EventEmitter {
   }
 
   addWorkspace(dir) {
-    if (!this.state.workspaces.includes(dir)) {
-      this.state.workspaces.push(dir);
+    const next = pushWorkspace(this.state.workspaces, dir);
+    if (next) {
+      this.state.workspaces = next;
       this.#saveState();
     }
   }
@@ -513,23 +567,203 @@ export class SessionHub extends EventEmitter {
     return s;
   }
 
-  /** Head-evict oldest buffered events until the byte/count budget holds. */
-  #evictHead(s, arr) {
-    while (
-      (s.eventBytes > MAX_BUFFERED_BYTES || arr.length > MAX_BUFFERED_EVENTS) &&
-      arr.length > 100
-    ) {
-      s.eventBytes -= arr[0]._sz || 0;
-      arr.shift();
+  bufferToolIndexes = new WeakMap();
+
+  /** Delivery-cache eviction must never be confused with persisted history. */
+  #evictHead(s, arr, bytesField = "eventBytes") {
+    while ((s[bytesField] > MAX_BUFFERED_BYTES || arr.length > MAX_BUFFERED_EVENTS) && arr.length > 100) {
+      // Never evict the last persistence seam: its unfinished tail is not
+      // recoverable from disk yet. Coalescing keeps normal live tails small.
+      if (!this.devinExt && arr[0].update?._meta?.piAcp?.historyBoundary &&
+          !arr.some((event, index) => index > 0 && event.update?._meta?.piAcp?.historyBoundary)) break;
+      const dropped = arr.shift();
+      s[bytesField] -= dropped._sz || 0;
+      const tools = this.bufferToolIndexes.get(arr);
+      if (tools?.get(dropped.update?.toolCallId) === dropped) tools.delete(dropped.update.toolCallId);
+      s[bytesField === "replayBytes" ? "replayTruncated" : "historyTruncated"] = true;
     }
   }
 
-  /** Push a buffered event with the byte-budget eviction applied. */
-  #pushEvent(s, evt, arr) {
-    evt._sz = JSON.stringify(evt.update).length;
-    arr.push(evt);
-    s.eventBytes = (s.eventBytes || 0) + evt._sz;
-    this.#evictHead(s, arr);
+  #pushEvent(s, evt, arr, bytesField = "eventBytes") {
+    s.eventRevision = (s.eventRevision || 0) + 1;
+    let previous, textSize;
+    if (!this.devinExt) {
+      let tools = this.bufferToolIndexes.get(arr);
+      if (!tools) { tools = new Map(); this.bufferToolIndexes.set(arr, tools); }
+      const u = evt.update, last = arr.at(-1);
+      if (["agent_message_chunk", "agent_thought_chunk"].includes(u.sessionUpdate) &&
+          last?.update.sessionUpdate === u.sessionUpdate && u.content?.type === "text" &&
+          last.update.content?.type === "text" && !u._meta && !last.update._meta) {
+        previous = last;
+        if (Object.keys(u).length === 2 && Object.keys(last.update).length === 2) {
+          textSize = previous._sz + JSON.stringify(u.content.text).length - 2;
+          // JSON escapes lone UTF-16 surrogates; adjacent chunks can join
+          // them into one code point (12 escaped chars become 2 code units).
+          if (/[\uD800-\uDBFF]$/.test(last.update.content.text) && /^[\uDC00-\uDFFF]/.test(u.content.text)) textSize -= 10;
+        }
+        evt.update = { ...u, content: { type: "text", text: last.update.content.text + u.content.text } };
+      } else if (["tool_call", "tool_call_update"].includes(u.sessionUpdate)) {
+        previous = tools.get(u.toolCallId);
+        if (previous) {
+          const old = previous.update, fields = Object.fromEntries(Object.entries(u).filter(([, value]) => value != null));
+          const meta = { ...old._meta, ...u._meta };
+          if (typeof u._meta?.terminal_output?.data === "string") meta.terminal_output = {
+            ...u._meta.terminal_output, data: (old._meta?.terminal_output?.data || "") + u._meta.terminal_output.data,
+          };
+          evt.update = { ...old, ...fields, sessionUpdate: old.sessionUpdate, _meta: meta };
+        } else tools.set(u.toolCallId, evt);
+      }
+      // A message fence is a snapshot seam. Keep subsequent tool progress in
+      // the live tail rather than mutating an event on the persisted side.
+      if (u._meta?.piAcp?.historyBoundary) tools.clear();
+    }
+    evt._sz = textSize ?? JSON.stringify(evt.update).length;
+    if (previous) {
+      s[bytesField] = (s[bytesField] || 0) + evt._sz - previous._sz;
+      previous.update = evt.update; previous._sz = evt._sz;
+    } else {
+      arr.push(evt); s[bytesField] = (s[bytesField] || 0) + evt._sz;
+    }
+    this.#evictHead(s, arr, bytesField);
+  }
+
+  /** Restore evicted history, preserving current progress and model context.
+   * The fence is emitted before persistence but delivered on Pi's ordered
+   * promise queue after persistence. A synchronous snapshot cannot straddle it. */
+  historyEvents(sessionId) {
+    const s = this.sessions.get(sessionId);
+    if (!s?.historyTruncated || this.devinExt) return s?.events || [];
+    const snapshot = this.acp.recordedHistorySnapshot?.(sessionId);
+    if (!snapshot) return s.events;
+    for (let i = s.events.length - 1; i >= 0; i--) {
+      const boundary = s.events[i].update?._meta?.piAcp?.historyBoundary;
+      const entryIndex = snapshot.messageIndexes.get(boundary);
+      if (!boundary) continue;
+      // A fence absent from the active branch means a tree switch, not an
+      // evicted prefix. Never graft an abandoned branch back into the UI.
+      if (entryIndex === undefined) return snapshot.events.map(({ t, update }) => ({ t, update }));
+      const prefix = snapshot.events.filter((event) => event.entryIndex <= entryIndex).map(({ t, update }) => ({ t, update }));
+      // Reattach request IDs to replayed user messages so inline receipts do
+      // not turn into orphan recovery rows after reconnecting a running turn.
+      let cursor = prefix.length - 1;
+      for (let j = i; j >= 0; j--) {
+        const u = s.events[j].update;
+        if (u.sessionUpdate !== "user_message_chunk" || !u._meta?.["devin-web/requestId"]) continue;
+        for (; cursor >= 0; cursor--) {
+          const candidate = prefix[cursor].update;
+          if (candidate.sessionUpdate === u.sessionUpdate && candidate.content?.type === u.content?.type &&
+              (candidate.content?.text ?? candidate.content?.data) === (u.content?.text ?? u.content?.data)) {
+            prefix[cursor].update = { ...candidate, _meta: { ...candidate._meta, ...u._meta } }; cursor--; break;
+          }
+        }
+      }
+      const pending = new Set();
+      for (const { update } of prefix) {
+        if (update.sessionUpdate === "tool_call") pending.add(update.toolCallId);
+        if (["completed", "failed"].includes(update.status)) pending.delete(update.toolCallId);
+      }
+      const inFlight = s.events.slice(0, i + 1).filter((event) => pending.has(event.update.toolCallId));
+      return [...prefix, ...inFlight, ...s.events.slice(i + 1)];
+    }
+    return s.events;
+  }
+
+  // Historical image bytes stay in the authoritative transcript. The wire only
+  // references immutable, session-scoped assets; eviction can recover them read-only.
+  #historyImage(sessionId, image) {
+    const mimeType = image.mimeType || "image/png", data = image.data;
+    if (!/^image\/(?:png|jpeg|gif|webp|avif)$/.test(mimeType) || typeof data !== "string" || !data || data.length > 32 * 1024 * 1024) return null;
+    const mid = "pi-" + createHash("sha256").update(mimeType).update("\0").update(data).digest("hex");
+    const key = `${sessionId}:${mid}`, old = this.historyImageCache.get(key);
+    const dimensions = old?.dimensions || imageDimensions(mimeType, data);
+    if (!dimensions) return null;
+    if (old) this.historyImageCache.delete(key);
+    else this.historyImageBytes += data.length;
+    this.historyImageCache.set(key, old || { data, mimeType, dimensions });
+    while (this.historyImageBytes > 32 * 1024 * 1024 || this.historyImageCache.size > 256) {
+      const first = this.historyImageCache.keys().next().value;
+      this.historyImageBytes -= this.historyImageCache.get(first).data.length; this.historyImageCache.delete(first);
+    }
+    return { mid, url: `/api/sessions/${encodeURIComponent(sessionId)}/img/${mid}/0`, ...dimensions };
+  }
+
+  /** Pure transport projection: never rewrite the SDK branch or delivery buffer. */
+  wireHistoryEvents(sessionId, events) {
+    return events.map((event) => {
+      const update = event.update;
+      if (update?.sessionUpdate !== "user_message_chunk" || update.content?.type !== "image" || !update.content.data) return event;
+      const asset = this.#historyImage(sessionId, update.content);
+      if (!asset) return event;
+      const { data, ...content } = update.content;
+      return { ...event, update: { ...update, content: { ...content, url: asset.url, ...(asset.width ? { width: asset.width, height: asset.height } : {}) } } };
+    });
+  }
+
+  // V2 removes only recognized binary image fields. Explicit paths, never a
+  // tool-owned marker, let the browser defer bytes without altering other raw data.
+  projectHistoryV2(sessionId, events) {
+    return this.wireHistoryEvents(sessionId, events).map((event) => {
+      const assets = [];
+      const walk = (value, path) => {
+        if (!value || typeof value !== "object" || path.length >= 245) return value;
+        if (value.type === "image" && typeof value.data === "string" && value.data.length >= 1024) {
+          const asset = this.#historyImage(sessionId, value);
+          if (asset) { assets.push({ ...asset, mimeType: value.mimeType || "image/png", path: [...path, "data"] }); return { ...value, data: null }; }
+        }
+        let copy;
+        for (const [key, child] of Object.entries(value)) {
+          const next = walk(child, [...path, Array.isArray(value) ? Number(key) : key]);
+          if (next !== child) {
+            copy ||= Array.isArray(value) ? value.slice() : { ...value };
+            Object.defineProperty(copy, key, { value: next, enumerable: true, writable: true, configurable: true });
+          }
+        }
+        return copy || value;
+      };
+      return { event: ["tool_call", "tool_call_update"].includes(event.update?.sessionUpdate) ? walk(event, []) : event, assets };
+    });
+  }
+
+  historyFrameV2(message, { knownToken, baseToken } = {}) {
+    const { events, ...envelope } = message, rows = this.projectHistoryV2(message.sessionId, events || []);
+    const hashes = Buffer.concat(rows.map((row) => createHash("sha256").update(JSON.stringify(row)).digest()));
+    const historyToken = `${this.historyEpoch}:${message.gen}:v2:${createHash("sha256").update(message.sessionId).update("\0").update(hashes).digest("hex")}`;
+    const meta = { ...envelope, historyToken, historyEncoding: HISTORY_ENCODING_V2, historyLength: rows.length };
+    const previous = this.historyCheckpoints.get(baseToken);
+    let from = 0, delta = false;
+    if (previous && previous.sessionId === message.sessionId && previous.gen === message.gen && previous.at > Date.now() - 10 * 60_000 &&
+        previous.hashes.length <= hashes.length && previous.hashes.equals(hashes.subarray(0, previous.hashes.length))) {
+      from = previous.hashes.length / 32; delta = true;
+    }
+    // Fingerprints only, never another full transcript cache. Eviction is safe:
+    // an unavailable baseline simply receives a complete authoritative snapshot.
+    const existing = this.historyCheckpoints.get(historyToken);
+    if (existing) { this.historyCheckpointBytes -= existing.hashes.length; this.historyCheckpoints.delete(historyToken); }
+    if (hashes.length <= 8 * 1024 * 1024 && Number.isSafeInteger(message.gen)) {
+      this.historyCheckpoints.set(historyToken, { sessionId: message.sessionId, gen: message.gen, hashes, at: Date.now() });
+      this.historyCheckpointBytes += hashes.length;
+    }
+    while (this.historyCheckpoints.size > 32 || this.historyCheckpointBytes > 8 * 1024 * 1024) {
+      const first = this.historyCheckpoints.keys().next().value;
+      this.historyCheckpointBytes -= this.historyCheckpoints.get(first).hashes.length; this.historyCheckpoints.delete(first);
+    }
+    if (knownToken === historyToken) return JSON.stringify({ ...meta, unchanged: true });
+    const selected = rows.slice(from), historyAssets = selected.flatMap((row, i) => row.assets.map((asset) => ({ ...asset, path: ["events", i, ...asset.path] })));
+    return JSON.stringify({ ...meta, ...(delta ? { delta: true, historyBaseToken: baseToken, historyBaseLength: from } : {}),
+      ...packHistoryEvents(selected.map((row) => row.event)), historyAssets });
+  }
+
+  /** Old clients retain the exact legacy envelope. New clients opt in per socket. */
+  historyFrame(message, { encoding, knownToken, baseToken } = {}) {
+    if (encoding === HISTORY_ENCODING_V2) return this.historyFrameV2(message, { knownToken, baseToken });
+    if (encoding !== HISTORY_ENCODING) return JSON.stringify(message);
+    const { events, ...envelope } = message;
+    const body = JSON.stringify(packHistoryEvents(this.wireHistoryEvents(message.sessionId, events || [])));
+    const historyToken = `${this.historyEpoch}:${message.gen}:${createHash("sha256").update(body).digest("hex")}`;
+    const meta = { ...envelope, historyToken, historyEncoding: HISTORY_ENCODING };
+    if (knownToken === historyToken) return JSON.stringify({ ...meta, unchanged: true });
+    // Serialize the large body only once, rather than stringify it again in an envelope.
+    return JSON.stringify(meta).slice(0, -1) + "," + body.slice(1);
   }
 
   // By default a session-scoped message goes only to that session's
@@ -538,14 +772,28 @@ export class SessionHub extends EventEmitter {
   // Lightweight metadata (state badges, deletions, agent notices) passes
   // {global:true} so watchers' sidebars stay live.
   #broadcast(sessionId, msg, { global = false } = {}) {
-    const data = JSON.stringify(msg);
+    if (msg.type === "history") msg = { ...msg,
+      pendingPermissionIds: [...(this.sessions.get(sessionId)?.pendingPermissions.values() || [])].map((p) => p.requestId),
+      pendingElicitationIds: [...(this.sessions.get(sessionId)?.pendingElicitations.values() || [])].map((e) => e.requestId),
+      title: this.state.sessions[sessionId]?.customTitle || this.sessions.get(sessionId)?.title || this.state.sessions[sessionId]?.title || null,
+      ...(this.acp.getProcessSummary ? { processes: this.acp.getProcessSummary(sessionId) } : {}),
+    };
+    let data, encoded, encodedV2;
     const targets = new Set();
     const s = sessionId && this.sessions.get(sessionId);
     if (s) for (const ws of s.subscribers) targets.add(ws);
     if (global || sessionId == null) for (const ws of this.allSubscribers) targets.add(ws);
     for (const ws of targets) {
       // A socket that both `watch`es and subscribes must get each message once.
-      if (ws.readyState === 1) this.#send(ws, data);
+      if (ws.readyState === 1) {
+        if (msg.type === "history" && ws.historyEncoding === HISTORY_ENCODING_V2) {
+          encodedV2 ??= this.historyFrame(msg, { encoding: HISTORY_ENCODING_V2 });
+          this.#send(ws, encodedV2);
+        } else if (msg.type === "history" && ws.historyEncoding === HISTORY_ENCODING) {
+          encoded ??= this.historyFrame(msg, { encoding: HISTORY_ENCODING });
+          this.#send(ws, encoded);
+        } else { data ??= JSON.stringify(msg); this.#send(ws, data); }
+      }
     }
   }
 
@@ -573,6 +821,7 @@ export class SessionHub extends EventEmitter {
   /** Ensure the ACP session is loaded in the agent process. */
   async ensureAttached(sessionId, cwd) {
     const s = this.#entry(sessionId, cwd);
+    if (s.deleting || this.deletions.get(sessionId)?.status === "deleting") throw new Error("会话正在删除，请稍后核对结果");
     if (s.attached) return s;
     if (s.attaching) return s.attaching;
     // pi's session/load disposes the session's live AgentSession before
@@ -587,11 +836,17 @@ export class SessionHub extends EventEmitter {
       s.attachWanted = true;
       throw new Error("session busy — a prompt is still in flight");
     }
+    // An archived scratch chat whose files were deleted still needs its cwd
+    // for session/load — recreate the exact validated dir, empty.
+    if (s.cwd && !fs.existsSync(s.cwd) &&
+        (this.state.sessions[sessionId]?.scratch || isScratchDirLexical(scratchRoot(), s.cwd)) &&
+        isScratchDir(scratchRoot(), s.cwd)) {
+      try { fs.mkdirSync(s.cwd, { recursive: true, mode: 0o700 }); } catch {}
+    }
     // Replay lands in a side buffer (see the sessionUpdate handler) — the
     // mirrored events stay intact until the load actually succeeds, so a
     // failed attempt changes nothing for subscribers.
-    s.replayEvents = [];
-    const loadReq = this.acp.request("session/load", { sessionId, cwd: s.cwd, mcpServers: [] });
+    s.replayEvents = []; s.replayBytes = 0; s.replayTruncated = false;
     const onLoaded = (res) => {
         s.attached = true;
         // A fresh agent-side session cannot carry our previous in-flight
@@ -606,6 +861,7 @@ export class SessionHub extends EventEmitter {
         s.gen++;
         // Post-timeout adopts arrive with replayEvents already nulled — keep
         // the previous transcript rather than blanking it.
+        if (s.replayEvents) s.historyTruncated = s.replayTruncated;
         s.events = s.replayEvents || s.events || [];
         // Replay drops user prompts sent via ACP (they're not in
         // prompt_history) — graft them back from message_nodes.
@@ -636,11 +892,12 @@ export class SessionHub extends EventEmitter {
             }
           }
         }
-        s.lastHistoryBC = { gen: s.gen, len: s.events.length, at: Date.now() };
+        s.lastHistoryBC = { gen: s.gen, len: s.events.length, revision: s.eventRevision, at: Date.now() };
         this.#broadcast(sessionId, {
           type: "history",
           sessionId,
-          events: s.events,
+          events: this.historyEvents(sessionId),
+          revision: s.eventRevision,
           attached: true,
           gen: s.gen,
           state: "held",
@@ -658,8 +915,9 @@ export class SessionHub extends EventEmitter {
         if (!s.prompting && s.queue.length) this.#drainQueue(s);
         return s;
       };
+    const loadReq = this.#withAttachmentSlot(sessionId, () => this.acp.request("session/load", { sessionId, cwd: s.cwd, mcpServers: [] }).then(onLoaded));
     s.attaching = Promise.race([
-      loadReq.then(onLoaded),
+      loadReq,
       // A hung session/load (busy/wedged agent) must not hold s.attaching
       // forever — it starves the sqlite mirror via the attaching guard.
       new Promise((_, rej) =>
@@ -692,29 +950,65 @@ export class SessionHub extends EventEmitter {
     return s.attaching;
   }
 
-  async createSession(cwd) {
-    const res = await this.acp.request("session/new", { cwd, mcpServers: [] });
-    const s = this.#entry(res.sessionId, cwd);
-    s.attached = true;
-    s.modes = res.modes;
-    s.configOptions = res.configOptions;
-    this.#setMeta(res.sessionId, { cwd, createdAt: new Date().toISOString() });
-    this.addWorkspace(cwd);
-    // pi doesn't write the session file until the first prompt — a re-list
-    // would lose the just-created session, so inject it into the cache.
-    if (!this.devinExt) {
-      this.listCacheAdd({
-        sessionId: res.sessionId,
-        cwd,
-        title: null,
-        updatedAt: new Date().toISOString(),
-        agent: this.agent,
-        pinned: false,
-        archived: false,
-        state: "held",
-      });
-    }
-    return { sessionId: res.sessionId, modes: res.modes, configOptions: res.configOptions };
+  async createSession(cwd, { scratch = false } = {}) {
+    const slot = Symbol("new session");
+    return this.#withAttachmentSlot(slot, async () => {
+      const res = await this.acp.request("session/new", { cwd, mcpServers: [] });
+      const s = this.#entry(res.sessionId, cwd);
+      s.attached = true;
+      this._slotReservations.delete(slot);
+      s.modes = res.modes;
+      s.configOptions = res.configOptions;
+      this.#setMeta(res.sessionId, { cwd, createdAt: new Date().toISOString(), ...(scratch ? { scratch: true } : {}) });
+      // Scratch dirs are per-chat temporaries — they never join the MRU list.
+      if (!scratch) this.addWorkspace(cwd);
+      // pi doesn't write the session file until the first prompt — a re-list
+      // would lose the just-created session, so inject it into the cache.
+      if (!this.devinExt) {
+        this.listCacheAdd({
+          sessionId: res.sessionId,
+          cwd,
+          title: null,
+          updatedAt: new Date().toISOString(),
+          agent: this.agent,
+          pinned: false,
+          archived: false,
+          scratch,
+          state: "held",
+        });
+      }
+      return { sessionId: res.sessionId, modes: res.modes, configOptions: res.configOptions };
+    });
+  }
+
+  #isRunning(s) {
+    return !!(s.prompting || (this.acp.sessionActivity ? this.acp.sessionActivity(s.id).running : s.sdkRunning));
+  }
+
+  #hasBackground(s) { return !!this.acp.sessionActivity?.(s.id)?.background; }
+
+  #evictable(s) {
+    return s.attached && !s.attaching && !s.closing && !s.deleting && !s.configuring && !s.treeNavigating &&
+      !this.#isRunning(s) && !this.#hasBackground(s) && !s.queue.length && !s.pendingPermissions.size && !s.pendingElicitations.size;
+  }
+
+  /** Admission reservations cap Pi's heap even when every attachment is busy.
+   * Only admission is serialized; unrelated loads and prompts still run in parallel. */
+  async #withAttachmentSlot(key, work) {
+    if (this.agent !== "pi") return work();
+    const reserve = this._capacityGate.then(async () => {
+      const count = () => new Set([...this._slotReservations, ...[...this.sessions.values()].filter((s) => s.attached).map((s) => s.id)]).size;
+      while (count() >= MAX_ATTACHED_SESSIONS) {
+        const candidate = [...this.sessions.values()].filter((s) => s.id !== key && this.#evictable(s))
+          .sort((a, b) => Number(a.subscribers.size > 0) - Number(b.subscribers.size > 0) || (a.lastActiveAt || 0) - (b.lastActiveAt || 0))[0];
+        if (!candidate) throw processError(409, "SESSION_CAPACITY", "已达到会话保留上限，请先停止后台任务或关闭空闲会话后重试");
+        await this.closeSession(candidate.id);
+      }
+      this._slotReservations.add(key);
+    });
+    this._capacityGate = reserve.catch(() => {});
+    await reserve;
+    try { return await work(); } finally { this._slotReservations.delete(key); }
   }
 
   /**
@@ -819,7 +1113,7 @@ export class SessionHub extends EventEmitter {
       s.mirrorCount = sig.c;
       s.mirrorMaxRow = sig.m;
       s.gen++;
-      s.lastHistoryBC = { gen: s.gen, len: s.events.length, at: Date.now() };
+      s.lastHistoryBC = { gen: s.gen, len: s.events.length, revision: s.eventRevision, at: Date.now() };
       this.#broadcast(s.id, {
         type: "history",
         sessionId: s.id,
@@ -1026,6 +1320,20 @@ export class SessionHub extends EventEmitter {
 
   /** message_id → images[] index for a session (lazy, rebuilt when stale). */
   sessionImage(sessionId, mid, idx) {
+    if (/^pi-[a-f0-9]{64}$/.test(mid) && idx === 0) {
+      const key = `${sessionId}:${mid}`, cached = this.historyImageCache.get(key);
+      if (cached) { this.historyImageCache.delete(key); this.historyImageCache.set(key, cached); return cached; }
+      // A cache miss must not load/restart the agent or read an unrelated branch.
+      const find = (value, depth = 0) => {
+        if (!value || typeof value !== "object" || depth > 250) return null;
+        if (value.type === "image" && typeof value.data === "string" && this.#historyImage(sessionId, value)?.mid === mid)
+          return this.historyImageCache.get(key);
+        for (const child of Object.values(value)) if (child && typeof child === "object") { const match = find(child, depth + 1); if (match) return match; }
+        return null;
+      };
+      for (const event of this.historyEvents(sessionId)) { const match = find(event.update); if (match) return match; }
+      return null;
+    }
     const db = this.#sessDb();
     if (!db) return null;
     let cache = this.imgCache.get(sessionId);
@@ -1295,13 +1603,16 @@ export class SessionHub extends EventEmitter {
       this.#setMeta(it.sessionId, { cwd: it.cwd, title: it.title, updatedAt: it.updatedAt });
       it.pinned = !!this.state.sessions[it.sessionId]?.pinned;
       it.archived = !!this.state.sessions[it.sessionId]?.archived;
+      // Lexical direct-child check only — realpath per row would be a syscall storm.
+      it.scratch = !!this.state.sessions[it.sessionId]?.scratch ||
+        isScratchDirLexical(this._scratchRoot ??= scratchRoot(), it.cwd);
       // Keep runtime entries fresh
       const s = this.sessions.get(it.sessionId);
       if (s) { s.title = it.title; if (!s.cwd) s.cwd = it.cwd; }
       // working = prompt in-flight under us; held = loaded by our acp, idle;
       // locked-active = held by another process and mid-turn; locked = held by
       // another process, suspended; free = nobody has it.
-      if (s?.attached) it.state = s.prompting ? "working" : "held";
+      if (s?.attached) it.state = this.#isRunning(s) ? "working" : "held";
       else if (it._meta?.["cognition.ai/isLocked"]) {
         const age = it.updatedAt ? now - new Date(it.updatedAt).getTime() : Infinity;
         const verdict = activity?.get(it.sessionId);
@@ -1385,6 +1696,7 @@ export class SessionHub extends EventEmitter {
       at: q.at,
       text: q.blocks.filter((b) => b.type === "text").map((b) => b.text).join("\n").slice(0, 200),
       images: q.blocks.filter((b) => b.type === "image").length,
+      requestId: q.requestId,
     }));
   }
 
@@ -1397,6 +1709,7 @@ export class SessionHub extends EventEmitter {
       behind a ghost and the busy-guard blocks every reattach. */
   #releaseTurn(s) {
     s.prompting = 0;
+    s.sdkRunning = false;
     for (const p of s.pendingPermissions.values())
       this.#broadcast(s.id, { type: "permission_resolved", sessionId: s.id, requestId: p.requestId, cancelled: true }, { global: true });
     s.pendingPermissions.clear();
@@ -1407,10 +1720,14 @@ export class SessionHub extends EventEmitter {
 
   /** Send the head of the queue once the session goes idle. */
   #drainQueue(s) {
+    if (s.deleting || !s.attached || this.#isRunning(s)) return;
     const next = s.queue.shift();
     if (!next) return;
     this.#broadcastQueue(s);
-    this.prompt(s.id, s.cwd, next.blocks).catch((e) => {
+    this.prompt(s.id, s.cwd, next.blocks, { requestId: next.requestId }).then((result) => {
+      if (!result?.queued) this.#setPromptReceipt(next.requestId, { status: "completed" });
+    }).catch((e) => {
+      this.#setPromptReceipt(next.requestId, { status: "failed", error: String(e.message || e) });
       console.error(`[devin-web] queued prompt failed for ${s.id}:`, e);
     });
   }
@@ -1427,23 +1744,68 @@ export class SessionHub extends EventEmitter {
     const i = s?.queue.findIndex((q) => q.id === queueId) ?? -1;
     if (i < 0) return false;
     const [q] = s.queue.splice(i, 1);
+    this.#setPromptReceipt(q.requestId, { status: "cancelled" });
     this.#broadcastQueue(s);
     return q;
   }
 
-  async prompt(sessionId, cwd, blocks) {
+  /** Delivery receipts are retained for 24h; never evict a live/queued request.
+   * A duplicate id reuses the same work, including across WebSocket reconnects. */
+  submitPrompt(sessionId, cwd, blocks, requestId) {
+    if (!requestId) return this.prompt(sessionId, cwd, blocks);
+    if (typeof requestId !== "string" || !/^[a-zA-Z0-9_.-]{1,128}$/.test(requestId))
+      return Promise.reject(new Error("无效的发送标识"));
+    const hash = createHash("sha256").update(JSON.stringify([sessionId, cwd, blocks])).digest("hex");
+    const existing = this.promptReceipts.get(requestId);
+    if (existing) return existing.hash === hash ? existing.promise : Promise.reject(new Error("发送标识与原消息不匹配"));
+    const now = Date.now();
+    for (const [id, entry] of this.promptReceipts) {
+      if (["completed", "failed", "cancelled"].includes(entry.status) && now - entry.at > 86400000) this.promptReceipts.delete(id);
+    }
+    if (this.promptReceipts.size >= 10000) return Promise.reject(new Error("发送确认记录繁忙，请稍后重试"));
+    const receipt = { sessionId, requestId, hash, at: now, status: "receiving", accepted: false, promise: null };
+    this.promptReceipts.set(requestId, receipt);
+    receipt.promise = this.prompt(sessionId, cwd, blocks, { requestId }).then((result) => {
+      if (!result?.queued) this.#setPromptReceipt(requestId, { status: "completed" });
+      return result;
+    }, (error) => {
+      this.#setPromptReceipt(requestId, { status: "failed", error: String(error.message || error) });
+      throw error;
+    });
+    return receipt.promise;
+  }
+
+  promptStatus(sessionId, requestId) {
+    const receipt = this.promptReceipts.get(requestId);
+    if (!receipt || receipt.sessionId !== sessionId) return { requestId, status: "unknown" };
+    const { status, accepted, queueId, error } = receipt;
+    return { requestId, status, accepted, queueId, error };
+  }
+
+  #setPromptReceipt(requestId, patch) {
+    const receipt = this.promptReceipts.get(requestId);
+    if (!receipt) return;
+    Object.assign(receipt, patch);
+    this.#broadcast(receipt.sessionId, { type: "prompt_delivery", sessionId: receipt.sessionId,
+      ...this.promptStatus(receipt.sessionId, requestId) }, { global: true });
+  }
+
+  async prompt(sessionId, cwd, blocks, { requestId } = {}) {
     const s = await this.ensureAttached(sessionId, cwd);
+    this.#assertNotTreeNavigating(sessionId);
     s.lastActiveAt = Date.now();
     // A turn is already running — park this prompt in the per-session FIFO
     // and drain it when the current prompt resolves. The client gets a
     // queued chip instead of an optimistic user bubble.
-    if (s.prompting > 0) {
-      const q = { id: `q${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`, blocks, at: Date.now() };
+    if (this.#isRunning(s)) {
+      const q = { id: `q${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`, blocks, at: Date.now(), requestId };
       s.queue.push(q);
       this.#broadcastQueue(s);
+      this.#setPromptReceipt(requestId, { status: "queued", accepted: true, queueId: q.id });
       return { queued: true, queueId: q.id };
     }
     s.prompting++;
+    this.#setPromptReceipt(requestId, { status: "accepted", accepted: true, queueId: undefined });
     this.#broadcast(sessionId, { type: "session_state", sessionId, state: "working" }, { global: true });
     this.#recordPromptHistory(sessionId, blocks);
     // Optimistic transcript entry — web prompts never echo, and the sqlite
@@ -1466,6 +1828,7 @@ export class SessionHub extends EventEmitter {
         _meta: {
           "cognition.ai/timestamp": new Date().toISOString(),
           "devin-web/optimistic": true,
+          ...(requestId ? { "devin-web/requestId": requestId } : {}),
         },
       };
       const evt = { t: Date.now(), update };
@@ -1504,8 +1867,8 @@ export class SessionHub extends EventEmitter {
       s.prompting = Math.max(0, s.prompting - 1);
       // Only claim "held" when we actually still hold it — a mid-prompt
       // detach/lock-loss must not broadcast a false state.
-      if (s.attached && !s.prompting)
-        this.#broadcast(sessionId, { type: "session_state", sessionId, state: "held" }, { global: true });
+      if (s.attached)
+        this.#broadcast(sessionId, { type: "session_state", sessionId, state: this.stateOf(sessionId) }, { global: true });
       // The stored row supersedes the optimistic entry via the text-count
       // dedupe in #injectUserMessages — retry a few times while the turn's
       // snapshot lands, pushing history whenever a graft sticks.
@@ -1527,11 +1890,12 @@ export class SessionHub extends EventEmitter {
   /** Bump gen + push the consolidated transcript (clients rebuild). */
   #pushHistory(s) {
     s.gen++;
-    s.lastHistoryBC = { gen: s.gen, len: s.events.length, at: Date.now() };
+    s.lastHistoryBC = { gen: s.gen, len: s.events.length, revision: s.eventRevision, at: Date.now() };
     this.#broadcast(s.id, {
       type: "history",
       sessionId: s.id,
-      events: s.events,
+      events: this.historyEvents(s.id),
+      revision: s.eventRevision,
       attached: s.attached,
       gen: s.gen,
       state: this.stateOf(s.id),
@@ -1545,7 +1909,67 @@ export class SessionHub extends EventEmitter {
   }
 
   async cancel(sessionId) {
+    this.#assertNotTreeNavigating(sessionId);
     await this.acp.notify("session/cancel", { sessionId });
+  }
+
+  #assertNotTreeNavigating(sessionId) {
+    if (this.sessions.get(sessionId)?.treeNavigating)
+      throw treeError(409, "TREE_BUSY", "会话树正在切换，请完成后再操作此会话");
+  }
+
+  processes(sessionId, id) {
+    if (this.agent !== "pi" || !this.acp.getProcesses) throw processError(400, "PROCESSES_UNSUPPORTED", "该 Agent 不支持后台任务管理");
+    return id ? this.acp.processOutput(sessionId, id) : this.acp.getProcesses(sessionId);
+  }
+
+  async stopProcess(sessionId, id) {
+    this.#assertNotTreeNavigating(sessionId);
+    const s = this.sessions.get(sessionId);
+    if (s?.deleting || s?.closing) throw processError(409, "PROCESS_BUSY", "会话正在关闭或删除，请稍后核对任务状态");
+    if (this.agent !== "pi" || !this.acp.stopProcess) throw processError(400, "PROCESSES_UNSUPPORTED", "该 Agent 不支持后台任务管理");
+    return await this.acp.stopProcess(sessionId, id);
+  }
+
+  sessionTree(sessionId, nodeId) {
+    if (this.agent !== "pi" || !this.acp.getSessionTree)
+      throw treeError(400, "TREE_UNSUPPORTED", "该 Agent 不支持 Pi 会话树");
+    if (nodeId) return this.acp.getSessionTreeNode(sessionId, nodeId);
+    const tree = this.acp.getSessionTree(sessionId), s = this.sessions.get(sessionId);
+    return { ...tree, busy: tree.busy || !!(s?.treeNavigating || s?.deleting || s?.attaching || s?.closing || s?.configuring || s?.prompting || s?.queue?.length) };
+  }
+
+  async navigateTree(sessionId, options) {
+    const before = this.sessionTree(sessionId), s = this.sessions.get(sessionId);
+    if (!s?.attached || before.busy || s.pendingPermissions.size || s.pendingElicitations.size)
+      throw treeError(409, "TREE_BUSY", "会话运行、压缩或等待确认中，只能浏览，不能切换分支");
+    if ([...this.promptReceipts.values()].some((r) => r.sessionId === sessionId && ["receiving", "accepted", "queued"].includes(r.status)))
+      throw treeError(409, "TREE_BUSY", "发送结果仍在确认，请稍后切换分支");
+    // Acquire synchronously before any await. Other sessions remain usable.
+    s.treeNavigating = true;
+    let result;
+    try {
+      result = await this.acp.navigateSessionTree(sessionId, options);
+      return result;
+    } finally {
+      try {
+        // Hooks can change the branch and subsequently throw. Always recover
+        // the authoritative native branch, even when the HTTP result is lost.
+        if (this.acp.getSessionTree(sessionId).version !== before.version) {
+          const snapshot = this.acp.recordedHistorySnapshot(sessionId);
+          if (!snapshot) throw new Error("无法恢复切换后的会话历史");
+          s.events = []; s.eventBytes = 0; s.historyTruncated = false;
+          for (const event of snapshot.events) this.#pushEvent(s, event, s.events);
+          if (snapshot.lastEntryKey) this.#pushEvent(s, { t: Date.now(), update: {
+            sessionUpdate: "session_info_update", _meta: { piAcp: { historyBoundary: snapshot.lastEntryKey } },
+          } }, s.events);
+          this.#pushHistory(s);
+          this._listCache = null;
+          this.#refreshPiStats(s);
+        }
+        if (result && !result.cancelled) result.historyGen = s.gen;
+      } finally { s.treeNavigating = false; s.lastActiveAt = Date.now(); }
+    }
   }
 
   /** Revert steps = the session's prompt checkpoints (listSteps RPC). */
@@ -1578,7 +2002,11 @@ export class SessionHub extends EventEmitter {
   }
 
   async setConfigOption(sessionId, configId, value) {
-    return this.acp.request("session/set_config_option", { sessionId, configId, value });
+    this.#assertNotTreeNavigating(sessionId);
+    const s = this.sessions.get(sessionId);
+    if (s) s.configuring = (s.configuring || 0) + 1;
+    try { return await this.acp.request("session/set_config_option", { sessionId, configId, value }); }
+    finally { if (s) s.configuring--; }
   }
 
   /** session/prompt doesn't land in devin's prompt_history — and replay only
@@ -1669,35 +2097,72 @@ export class SessionHub extends EventEmitter {
     return { ok: true, persisted: done };
   }
 
-  async deleteSession(sessionId) {
-    const del = this.acp.request("session/delete", { sessionId }).catch(() => {
-      /* best-effort: still remove locally */
+  deletions = new Map();
+
+  deletionStatus(sessionId) {
+    let entry = this.deletions.get(sessionId);
+    if (entry && entry.status !== "deleting" && Date.now() - entry.at > 86400000) { this.deletions.delete(sessionId); entry = null; }
+    return entry ? { sessionId, status: entry.status, ...(entry.error ? { error: entry.error } : {}) }
+      : { sessionId, status: "unknown" };
+  }
+
+  deleteSession(sessionId) {
+    this.#assertNotTreeNavigating(sessionId);
+    this.deletionStatus(sessionId); // expire completed receipts before deduplication
+    const previous = this.deletions.get(sessionId);
+    if (previous && ["deleting", "deleted"].includes(previous.status)) return previous.promise;
+    for (const [id, entry] of this.deletions) if (entry.status !== "deleting" && Date.now() - entry.at > 86400000) this.deletions.delete(id);
+    if (this.deletions.size >= 2000 && !previous) {
+      const completed = [...this.deletions].find(([, item]) => item.status !== "deleting");
+      if (!completed) throw new Error("删除确认记录繁忙，请稍后操作");
+      this.deletions.delete(completed[0]);
+    }
+    const entry = { status: "deleting", at: Date.now() }; this.deletions.set(sessionId, entry);
+    const current = this.sessions.get(sessionId); if (current) current.deleting = true;
+    entry.promise = Promise.resolve().then(async () => {
+      // The HTTP caller receives acceptance immediately and polls this receipt.
+      // Do not turn a transport timeout into a false successful deletion.
+      await this.acp.request("session/delete", { sessionId }, 0);
+      entry.status = "deleted"; entry.at = Date.now();
+      try {
+        (this._tombstones ||= new Map()).set(sessionId, Date.now() + 20000);
+        this.listCacheRemove(sessionId);
+        for (const receipt of this.promptReceipts.values()) if (receipt.sessionId === sessionId && ["receiving", "queued", "accepted"].includes(receipt.status))
+          this.#setPromptReceipt(receipt.requestId, { status: "cancelled" });
+        this.#broadcast(sessionId, { type: "session_deleted", sessionId }, { global: true });
+      } finally {
+        this.sessions.delete(sessionId);
+        for (const [key, checkpoint] of this.historyCheckpoints) if (checkpoint.sessionId === sessionId) {
+          this.historyCheckpointBytes -= checkpoint.hashes.length; this.historyCheckpoints.delete(key);
+        }
+        for (const [key, image] of this.historyImageCache) if (key.startsWith(`${sessionId}:`)) {
+          this.historyImageBytes -= image.data.length; this.historyImageCache.delete(key);
+        }
+        delete this.state.sessions[sessionId]; this.#saveState(); this.#scheduleListRefresh();
+      }
+    }).catch((error) => {
+      if (entry.status !== "deleted") {
+        entry.status = "failed"; entry.error = error.message || "删除失败"; entry.at = Date.now();
+        if (current) current.deleting = false;
+      }
+      throw error;
     });
-    // pi's delete does a full session-dir walk (~seconds) — don't hold
-    // the API on it; re-list once the store has actually settled instead.
-    if (this.devinExt) await del;
-    else {
-      // Hide the row from every list until the agent-side delete has had
-      // time to land — a mid-flight poll would otherwise re-add it. 5min
-      // covers long batch deletes; once the RPC settles, a short grace is
-      // enough for the repopulate to finish before the id could resurface.
-      (this._tombstones ||= new Map()).set(sessionId, Date.now() + 300_000);
-      del.finally(() => {
-        // Hold the tombstone until the coalesced refresh (which re-runs if
-        // more deletes land mid-refresh) has produced a post-delete list —
-        // a stale snapshot arriving after the expiry would resurrect the row.
-        this._tombstones?.set(sessionId, Date.now() + 20_000);
-        this.#scheduleListRefresh();
-      });
-    }
-    this.listCacheRemove(sessionId);
+    return entry.promise;
+  }
+
+  /** Scratch quick-chat? Persisted flag first, then the cwd's location. */
+  isScratch(sessionId) {
+    if (this.state.sessions[sessionId]?.scratch) return true;
+    const cwd = this.sessions.get(sessionId)?.cwd || this.state.sessions[sessionId]?.cwd;
+    return !!cwd && isScratchDir(scratchRoot(), cwd);
+  }
+
+  /** Anything in flight that makes finishing the scratch chat unsafe? */
+  scratchBusy(sessionId) {
     const s = this.sessions.get(sessionId);
-    if (s) {
-      this.#broadcast(sessionId, { type: "session_deleted", sessionId }, { global: true });
-      this.sessions.delete(sessionId);
-    }
-    delete this.state.sessions[sessionId];
-    this.#saveState();
+    if (!s) return false;
+    return this.#isRunning(s) || this.#hasBackground(s) || s.queue.length > 0 ||
+      s.pendingPermissions.size > 0 || s.pendingElicitations.size > 0;
   }
 
   /** Archive/unarchive a session — hidden from the sidebar unless shown. */
@@ -1723,19 +2188,25 @@ export class SessionHub extends EventEmitter {
 
   /** Release a session we hold — frees the lock for other processes (e.g. terminal `devin -r`). */
   async closeSession(sessionId) {
+    this.#assertNotTreeNavigating(sessionId);
     const s = this.sessions.get(sessionId);
     if (!s?.attached) return { closed: false, reason: "not attached" };
+    if (this.#hasBackground(s)) throw processError(409, "PROCESS_BUSY", "请先停止或等待后台任务完成，再释放会话");
+    s.closing = true;
     try {
-      await this.acp.request("session/close", { sessionId });
-    } catch {
-      /* session may already be gone server-side */
-    }
-    s.attached = false;
-    s.attachWanted = false; // explicit release — hand it to whoever wants it
-    this.#releaseTurn(s);
-    this.#broadcast(sessionId, { type: "session_detached", sessionId }, { global: true });
-    this.#broadcast(sessionId, { type: "session_state", sessionId, state: "free" }, { global: true });
-    return { closed: true };
+      try {
+        await this.acp.request("session/close", { sessionId });
+      } catch (error) {
+        if (error.code === "PROCESS_BUSY") throw error;
+        /* session may already be gone server-side */
+      }
+      s.attached = false;
+      s.attachWanted = false; // explicit release — hand it to whoever wants it
+      this.#releaseTurn(s);
+      this.#broadcast(sessionId, { type: "session_detached", sessionId }, { global: true });
+      this.#broadcast(sessionId, { type: "session_state", sessionId, state: "free" }, { global: true });
+      return { closed: true };
+    } finally { s.closing = false; }
   }
 
   permissionResponse(requestId, optionId, cancelled) {
@@ -1790,7 +2261,7 @@ export class SessionHub extends EventEmitter {
   stateOf(sessionId) {
     const s = this.sessions.get(sessionId);
     if (!s?.attached) return s?.lockState || "free";
-    return s.prompting ? "working" : "held";
+    return this.#isRunning(s) ? "working" : "held";
   }
 
   // Aggregate token/cost totals read from the session's own jsonl file
